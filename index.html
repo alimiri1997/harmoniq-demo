@@ -24,10 +24,1249 @@
 .event-mini-row{display:flex;align-items:center;justify-content:space-between;gap:9px}.event-mini-row button{background:transparent;border:0;color:#ceb3ff;font-weight:700;font-size:11px;padding:6px 0}.event-mini-row button:hover{text-decoration:underline}
 @media(max-width:1000px){.event-list{grid-template-columns:1fr}.event-switch{max-width:210px}}
 @media(max-width:660px){.event-form{grid-template-columns:1fr}.event-form .span-2{grid-column:auto}.event-switch{max-width:170px}.event-list{grid-template-columns:1fr}}
+\n/* Harmoniq 2026 modular B2B prototype additions */
+.segment{display:flex;gap:8px;flex-wrap:wrap}.segment button{font-size:12px;border-radius:11px;border:1px solid #51426b;padding:10px 13px;background:#28213c;color:#d6cce6}.segment button.selected{border-color:#ad84ff;background:#503378;color:#fff}.check-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.module-check{display:flex;gap:12px;align-items:center;padding:13px 14px;border-radius:12px;background:#29223e;border:1px solid #3a3153;font-size:13px}.module-check input{accent-color:#a176ff;width:18px;height:18px}.module-off{opacity:.45;filter:grayscale(.3)}.notice-warn{background:#3a3023;border:1px solid #7d6440;color:#ffe2a5;border-radius:12px;padding:11px 14px;font-size:12px;line-height:1.65}.share-row{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}.qr-real{padding:11px;background:#fff;border-radius:12px;display:inline-flex;align-items:center;justify-content:center}.qr-real svg{display:block;width:168px;height:168px;image-rendering:pixelated}.mono{font:600 13px ui-monospace,SFMono-Regular,Consolas,monospace;word-break:break-all}.preset-label{font-size:11px;font-weight:800;letter-spacing:1.4px;color:#b69ced}.report-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.report-metrics>div{background:#2d2542;border-radius:12px;padding:15px}.report-metrics b{font-size:24px;display:block}.report-metrics span{font-size:12px;color:#bfb5ce}.type-chip{display:inline-block;padding:5px 10px;background:#413359;border-radius:30px;color:#dbc4ff;font-size:11px;font-weight:700}.event-card .type-chip{margin:4px 0}.flow-note{padding:15px;border-left:3px solid var(--accent);background:#261d3b;border-radius:0 12px 12px 0;color:#d7cbef;font-size:13px}.future.preview{border:1px dashed #5f4c88}.feedback-row{display:flex;gap:6px;margin-top:14px}.feedback-row button{flex:1;border-radius:10px;background:#38294f;border:1px solid #5c4774;color:#ffda90;font-size:22px;padding:11px 0}.short-link{overflow-wrap:anywhere;font-size:12px;color:#ddcff3;margin:12px 0}.mini-empty{padding:24px;text-align:center;border:1px dashed #66507f;border-radius:14px;color:#baadce;font-size:13px}@media(max-width:800px){.check-grid,.report-metrics{grid-template-columns:1fr}.share-row{display:block}.qr-real{margin-bottom:14px}}
 </style>
 </head>
 <body>
 <div id="app"></div><div id="toast" class="toast" role="status" aria-live="polite"></div>
+<script>
+var QRMode = {
+    MODE_NUMBER :       1 << 0,
+    MODE_ALPHA_NUM :    1 << 1,
+    MODE_8BIT_BYTE :    1 << 2,
+    MODE_KANJI :        1 << 3
+};
+
+var QRErrorCorrectLevel = {
+	L : 1,
+	M : 0,
+	Q : 3,
+	H : 2
+};
+
+
+var QRMaskPattern = {
+	PATTERN000 : 0,
+	PATTERN001 : 1,
+	PATTERN010 : 2,
+	PATTERN011 : 3,
+	PATTERN100 : 4,
+	PATTERN101 : 5,
+	PATTERN110 : 6,
+	PATTERN111 : 7
+};
+
+var QRMath = {
+
+	glog : function(n) {
+	
+		if (n < 1) {
+			throw new Error("glog(" + n + ")");
+		}
+		
+		return QRMath.LOG_TABLE[n];
+	},
+	
+	gexp : function(n) {
+	
+		while (n < 0) {
+			n += 255;
+		}
+	
+		while (n >= 256) {
+			n -= 255;
+		}
+	
+		return QRMath.EXP_TABLE[n];
+	},
+	
+	EXP_TABLE : new Array(256),
+	
+	LOG_TABLE : new Array(256)
+
+};
+	
+for (var i = 0; i < 8; i++) {
+	QRMath.EXP_TABLE[i] = 1 << i;
+}
+for (var i = 8; i < 256; i++) {
+	QRMath.EXP_TABLE[i] = QRMath.EXP_TABLE[i - 4]
+		^ QRMath.EXP_TABLE[i - 5]
+		^ QRMath.EXP_TABLE[i - 6]
+		^ QRMath.EXP_TABLE[i - 8];
+}
+for (var i = 0; i < 255; i++) {
+	QRMath.LOG_TABLE[QRMath.EXP_TABLE[i] ] = i;
+}
+
+
+
+
+
+function QRPolynomial(num, shift) {
+	if (num.length === undefined) {
+		throw new Error(num.length + "/" + shift);
+	}
+
+	var offset = 0;
+
+	while (offset < num.length && num[offset] === 0) {
+		offset++;
+	}
+
+	this.num = new Array(num.length - offset + shift);
+	for (var i = 0; i < num.length - offset; i++) {
+		this.num[i] = num[i + offset];
+	}
+}
+
+QRPolynomial.prototype = {
+
+	get : function(index) {
+		return this.num[index];
+	},
+	
+	getLength : function() {
+		return this.num.length;
+	},
+	
+	multiply : function(e) {
+	
+		var num = new Array(this.getLength() + e.getLength() - 1);
+	
+		for (var i = 0; i < this.getLength(); i++) {
+			for (var j = 0; j < e.getLength(); j++) {
+				num[i + j] ^= QRMath.gexp(QRMath.glog(this.get(i) ) + QRMath.glog(e.get(j) ) );
+			}
+		}
+	
+		return new QRPolynomial(num, 0);
+	},
+	
+	mod : function(e) {
+	
+		if (this.getLength() - e.getLength() < 0) {
+			return this;
+		}
+	
+		var ratio = QRMath.glog(this.get(0) ) - QRMath.glog(e.get(0) );
+	
+		var num = new Array(this.getLength() );
+		
+		for (var i = 0; i < this.getLength(); i++) {
+			num[i] = this.get(i);
+		}
+		
+		for (var x = 0; x < e.getLength(); x++) {
+			num[x] ^= QRMath.gexp(QRMath.glog(e.get(x) ) + ratio);
+		}
+	
+		// recursive call
+		return new QRPolynomial(num, 0).mod(e);
+	}
+};
+
+
+
+
+
+function QRRSBlock(totalCount, dataCount) {
+	this.totalCount = totalCount;
+	this.dataCount  = dataCount;
+}
+
+QRRSBlock.RS_BLOCK_TABLE = [
+
+	// L
+	// M
+	// Q
+	// H
+
+	// 1
+	[1, 26, 19],
+	[1, 26, 16],
+	[1, 26, 13],
+	[1, 26, 9],
+	
+	// 2
+	[1, 44, 34],
+	[1, 44, 28],
+	[1, 44, 22],
+	[1, 44, 16],
+
+	// 3
+	[1, 70, 55],
+	[1, 70, 44],
+	[2, 35, 17],
+	[2, 35, 13],
+
+	// 4		
+	[1, 100, 80],
+	[2, 50, 32],
+	[2, 50, 24],
+	[4, 25, 9],
+	
+	// 5
+	[1, 134, 108],
+	[2, 67, 43],
+	[2, 33, 15, 2, 34, 16],
+	[2, 33, 11, 2, 34, 12],
+	
+	// 6
+	[2, 86, 68],
+	[4, 43, 27],
+	[4, 43, 19],
+	[4, 43, 15],
+	
+	// 7		
+	[2, 98, 78],
+	[4, 49, 31],
+	[2, 32, 14, 4, 33, 15],
+	[4, 39, 13, 1, 40, 14],
+	
+	// 8
+	[2, 121, 97],
+	[2, 60, 38, 2, 61, 39],
+	[4, 40, 18, 2, 41, 19],
+	[4, 40, 14, 2, 41, 15],
+	
+	// 9
+	[2, 146, 116],
+	[3, 58, 36, 2, 59, 37],
+	[4, 36, 16, 4, 37, 17],
+	[4, 36, 12, 4, 37, 13],
+	
+	// 10		
+	[2, 86, 68, 2, 87, 69],
+	[4, 69, 43, 1, 70, 44],
+	[6, 43, 19, 2, 44, 20],
+	[6, 43, 15, 2, 44, 16],
+
+	// 11
+	[4, 101, 81],
+	[1, 80, 50, 4, 81, 51],
+	[4, 50, 22, 4, 51, 23],
+	[3, 36, 12, 8, 37, 13],
+
+	// 12
+	[2, 116, 92, 2, 117, 93],
+	[6, 58, 36, 2, 59, 37],
+	[4, 46, 20, 6, 47, 21],
+	[7, 42, 14, 4, 43, 15],
+
+	// 13
+	[4, 133, 107],
+	[8, 59, 37, 1, 60, 38],
+	[8, 44, 20, 4, 45, 21],
+	[12, 33, 11, 4, 34, 12],
+
+	// 14
+	[3, 145, 115, 1, 146, 116],
+	[4, 64, 40, 5, 65, 41],
+	[11, 36, 16, 5, 37, 17],
+	[11, 36, 12, 5, 37, 13],
+
+	// 15
+	[5, 109, 87, 1, 110, 88],
+	[5, 65, 41, 5, 66, 42],
+	[5, 54, 24, 7, 55, 25],
+	[11, 36, 12],
+
+	// 16
+	[5, 122, 98, 1, 123, 99],
+	[7, 73, 45, 3, 74, 46],
+	[15, 43, 19, 2, 44, 20],
+	[3, 45, 15, 13, 46, 16],
+
+	// 17
+	[1, 135, 107, 5, 136, 108],
+	[10, 74, 46, 1, 75, 47],
+	[1, 50, 22, 15, 51, 23],
+	[2, 42, 14, 17, 43, 15],
+
+	// 18
+	[5, 150, 120, 1, 151, 121],
+	[9, 69, 43, 4, 70, 44],
+	[17, 50, 22, 1, 51, 23],
+	[2, 42, 14, 19, 43, 15],
+
+	// 19
+	[3, 141, 113, 4, 142, 114],
+	[3, 70, 44, 11, 71, 45],
+	[17, 47, 21, 4, 48, 22],
+	[9, 39, 13, 16, 40, 14],
+
+	// 20
+	[3, 135, 107, 5, 136, 108],
+	[3, 67, 41, 13, 68, 42],
+	[15, 54, 24, 5, 55, 25],
+	[15, 43, 15, 10, 44, 16],
+
+	// 21
+	[4, 144, 116, 4, 145, 117],
+	[17, 68, 42],
+	[17, 50, 22, 6, 51, 23],
+	[19, 46, 16, 6, 47, 17],
+
+	// 22
+	[2, 139, 111, 7, 140, 112],
+	[17, 74, 46],
+	[7, 54, 24, 16, 55, 25],
+	[34, 37, 13],
+
+	// 23
+	[4, 151, 121, 5, 152, 122],
+	[4, 75, 47, 14, 76, 48],
+	[11, 54, 24, 14, 55, 25],
+	[16, 45, 15, 14, 46, 16],
+
+	// 24
+	[6, 147, 117, 4, 148, 118],
+	[6, 73, 45, 14, 74, 46],
+	[11, 54, 24, 16, 55, 25],
+	[30, 46, 16, 2, 47, 17],
+
+	// 25
+	[8, 132, 106, 4, 133, 107],
+	[8, 75, 47, 13, 76, 48],
+	[7, 54, 24, 22, 55, 25],
+	[22, 45, 15, 13, 46, 16],
+
+	// 26
+	[10, 142, 114, 2, 143, 115],
+	[19, 74, 46, 4, 75, 47],
+	[28, 50, 22, 6, 51, 23],
+	[33, 46, 16, 4, 47, 17],
+
+	// 27
+	[8, 152, 122, 4, 153, 123],
+	[22, 73, 45, 3, 74, 46],
+	[8, 53, 23, 26, 54, 24],
+	[12, 45, 15, 28, 46, 16],
+
+	// 28
+	[3, 147, 117, 10, 148, 118],
+	[3, 73, 45, 23, 74, 46],
+	[4, 54, 24, 31, 55, 25],
+	[11, 45, 15, 31, 46, 16],
+
+	// 29
+	[7, 146, 116, 7, 147, 117],
+	[21, 73, 45, 7, 74, 46],
+	[1, 53, 23, 37, 54, 24],
+	[19, 45, 15, 26, 46, 16],
+
+	// 30
+	[5, 145, 115, 10, 146, 116],
+	[19, 75, 47, 10, 76, 48],
+	[15, 54, 24, 25, 55, 25],
+	[23, 45, 15, 25, 46, 16],
+
+	// 31
+	[13, 145, 115, 3, 146, 116],
+	[2, 74, 46, 29, 75, 47],
+	[42, 54, 24, 1, 55, 25],
+	[23, 45, 15, 28, 46, 16],
+
+	// 32
+	[17, 145, 115],
+	[10, 74, 46, 23, 75, 47],
+	[10, 54, 24, 35, 55, 25],
+	[19, 45, 15, 35, 46, 16],
+
+	// 33
+	[17, 145, 115, 1, 146, 116],
+	[14, 74, 46, 21, 75, 47],
+	[29, 54, 24, 19, 55, 25],
+	[11, 45, 15, 46, 46, 16],
+
+	// 34
+	[13, 145, 115, 6, 146, 116],
+	[14, 74, 46, 23, 75, 47],
+	[44, 54, 24, 7, 55, 25],
+	[59, 46, 16, 1, 47, 17],
+
+	// 35
+	[12, 151, 121, 7, 152, 122],
+	[12, 75, 47, 26, 76, 48],
+	[39, 54, 24, 14, 55, 25],
+	[22, 45, 15, 41, 46, 16],
+
+	// 36
+	[6, 151, 121, 14, 152, 122],
+	[6, 75, 47, 34, 76, 48],
+	[46, 54, 24, 10, 55, 25],
+	[2, 45, 15, 64, 46, 16],
+
+	// 37
+	[17, 152, 122, 4, 153, 123],
+	[29, 74, 46, 14, 75, 47],
+	[49, 54, 24, 10, 55, 25],
+	[24, 45, 15, 46, 46, 16],
+
+	// 38
+	[4, 152, 122, 18, 153, 123],
+	[13, 74, 46, 32, 75, 47],
+	[48, 54, 24, 14, 55, 25],
+	[42, 45, 15, 32, 46, 16],
+
+	// 39
+	[20, 147, 117, 4, 148, 118],
+	[40, 75, 47, 7, 76, 48],
+	[43, 54, 24, 22, 55, 25],
+	[10, 45, 15, 67, 46, 16],
+
+	// 40
+	[19, 148, 118, 6, 149, 119],
+	[18, 75, 47, 31, 76, 48],
+	[34, 54, 24, 34, 55, 25],
+	[20, 45, 15, 61, 46, 16]
+];
+
+QRRSBlock.getRSBlocks = function(typeNumber, errorCorrectLevel) {
+	
+	var rsBlock = QRRSBlock.getRsBlockTable(typeNumber, errorCorrectLevel);
+	
+	if (rsBlock === undefined) {
+		throw new Error("bad rs block @ typeNumber:" + typeNumber + "/errorCorrectLevel:" + errorCorrectLevel);
+	}
+
+	var length = rsBlock.length / 3;
+	
+	var list = [];
+	
+	for (var i = 0; i < length; i++) {
+
+		var count = rsBlock[i * 3 + 0];
+		var totalCount = rsBlock[i * 3 + 1];
+		var dataCount  = rsBlock[i * 3 + 2];
+
+		for (var j = 0; j < count; j++) {
+			list.push(new QRRSBlock(totalCount, dataCount) );	
+		}
+	}
+	
+	return list;
+};
+
+QRRSBlock.getRsBlockTable = function(typeNumber, errorCorrectLevel) {
+
+	switch(errorCorrectLevel) {
+	case QRErrorCorrectLevel.L :
+		return QRRSBlock.RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 0];
+	case QRErrorCorrectLevel.M :
+		return QRRSBlock.RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 1];
+	case QRErrorCorrectLevel.Q :
+		return QRRSBlock.RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 2];
+	case QRErrorCorrectLevel.H :
+		return QRRSBlock.RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 3];
+	default :
+		return undefined;
+	}
+};
+
+
+
+function QRBitBuffer() {
+	this.buffer = [];
+	this.length = 0;
+}
+
+QRBitBuffer.prototype = {
+
+	get : function(index) {
+		var bufIndex = Math.floor(index / 8);
+		return ( (this.buffer[bufIndex] >>> (7 - index % 8) ) & 1) == 1;
+	},
+	
+	put : function(num, length) {
+		for (var i = 0; i < length; i++) {
+			this.putBit( ( (num >>> (length - i - 1) ) & 1) == 1);
+		}
+	},
+	
+	getLengthInBits : function() {
+		return this.length;
+	},
+	
+	putBit : function(bit) {
+	
+		var bufIndex = Math.floor(this.length / 8);
+		if (this.buffer.length <= bufIndex) {
+			this.buffer.push(0);
+		}
+	
+		if (bit) {
+			this.buffer[bufIndex] |= (0x80 >>> (this.length % 8) );
+		}
+	
+		this.length++;
+	}
+};
+
+
+
+
+
+function QR8bitByte(data) {
+	this.mode = QRMode.MODE_8BIT_BYTE;
+	this.data = data;
+}
+
+QR8bitByte.prototype = {
+
+	getLength : function() {
+		return this.data.length;
+	},
+	
+	write : function(buffer) {
+		for (var i = 0; i < this.data.length; i++) {
+			// not JIS ...
+			buffer.put(this.data.charCodeAt(i), 8);
+		}
+	}
+};
+
+
+
+
+
+
+
+
+var QRUtil = {
+
+    PATTERN_POSITION_TABLE : [
+        [],
+        [6, 18],
+        [6, 22],
+        [6, 26],
+        [6, 30],
+        [6, 34],
+        [6, 22, 38],
+        [6, 24, 42],
+        [6, 26, 46],
+        [6, 28, 50],
+        [6, 30, 54],        
+        [6, 32, 58],
+        [6, 34, 62],
+        [6, 26, 46, 66],
+        [6, 26, 48, 70],
+        [6, 26, 50, 74],
+        [6, 30, 54, 78],
+        [6, 30, 56, 82],
+        [6, 30, 58, 86],
+        [6, 34, 62, 90],
+        [6, 28, 50, 72, 94],
+        [6, 26, 50, 74, 98],
+        [6, 30, 54, 78, 102],
+        [6, 28, 54, 80, 106],
+        [6, 32, 58, 84, 110],
+        [6, 30, 58, 86, 114],
+        [6, 34, 62, 90, 118],
+        [6, 26, 50, 74, 98, 122],
+        [6, 30, 54, 78, 102, 126],
+        [6, 26, 52, 78, 104, 130],
+        [6, 30, 56, 82, 108, 134],
+        [6, 34, 60, 86, 112, 138],
+        [6, 30, 58, 86, 114, 142],
+        [6, 34, 62, 90, 118, 146],
+        [6, 30, 54, 78, 102, 126, 150],
+        [6, 24, 50, 76, 102, 128, 154],
+        [6, 28, 54, 80, 106, 132, 158],
+        [6, 32, 58, 84, 110, 136, 162],
+        [6, 26, 54, 82, 110, 138, 166],
+        [6, 30, 58, 86, 114, 142, 170]
+    ],
+
+    G15 : (1 << 10) | (1 << 8) | (1 << 5) | (1 << 4) | (1 << 2) | (1 << 1) | (1 << 0),
+    G18 : (1 << 12) | (1 << 11) | (1 << 10) | (1 << 9) | (1 << 8) | (1 << 5) | (1 << 2) | (1 << 0),
+    G15_MASK : (1 << 14) | (1 << 12) | (1 << 10)    | (1 << 4) | (1 << 1),
+
+    getBCHTypeInfo : function(data) {
+        var d = data << 10;
+        while (QRUtil.getBCHDigit(d) - QRUtil.getBCHDigit(QRUtil.G15) >= 0) {
+            d ^= (QRUtil.G15 << (QRUtil.getBCHDigit(d) - QRUtil.getBCHDigit(QRUtil.G15) ) );    
+        }
+        return ( (data << 10) | d) ^ QRUtil.G15_MASK;
+    },
+
+    getBCHTypeNumber : function(data) {
+        var d = data << 12;
+        while (QRUtil.getBCHDigit(d) - QRUtil.getBCHDigit(QRUtil.G18) >= 0) {
+            d ^= (QRUtil.G18 << (QRUtil.getBCHDigit(d) - QRUtil.getBCHDigit(QRUtil.G18) ) );    
+        }
+        return (data << 12) | d;
+    },
+
+    getBCHDigit : function(data) {
+
+        var digit = 0;
+
+        while (data !== 0) {
+            digit++;
+            data >>>= 1;
+        }
+
+        return digit;
+    },
+
+    getPatternPosition : function(typeNumber) {
+        return QRUtil.PATTERN_POSITION_TABLE[typeNumber - 1];
+    },
+
+    getMask : function(maskPattern, i, j) {
+        
+        switch (maskPattern) {
+            
+        case QRMaskPattern.PATTERN000 : return (i + j) % 2 === 0;
+        case QRMaskPattern.PATTERN001 : return i % 2 === 0;
+        case QRMaskPattern.PATTERN010 : return j % 3 === 0;
+        case QRMaskPattern.PATTERN011 : return (i + j) % 3 === 0;
+        case QRMaskPattern.PATTERN100 : return (Math.floor(i / 2) + Math.floor(j / 3) ) % 2 === 0;
+        case QRMaskPattern.PATTERN101 : return (i * j) % 2 + (i * j) % 3 === 0;
+        case QRMaskPattern.PATTERN110 : return ( (i * j) % 2 + (i * j) % 3) % 2 === 0;
+        case QRMaskPattern.PATTERN111 : return ( (i * j) % 3 + (i + j) % 2) % 2 === 0;
+
+        default :
+            throw new Error("bad maskPattern:" + maskPattern);
+        }
+    },
+
+    getErrorCorrectPolynomial : function(errorCorrectLength) {
+
+        var a = new QRPolynomial([1], 0);
+
+        for (var i = 0; i < errorCorrectLength; i++) {
+            a = a.multiply(new QRPolynomial([1, QRMath.gexp(i)], 0) );
+        }
+
+        return a;
+    },
+
+    getLengthInBits : function(mode, type) {
+
+        if (1 <= type && type < 10) {
+
+            // 1 - 9
+
+            switch(mode) {
+            case QRMode.MODE_NUMBER     : return 10;
+            case QRMode.MODE_ALPHA_NUM  : return 9;
+            case QRMode.MODE_8BIT_BYTE  : return 8;
+            case QRMode.MODE_KANJI      : return 8;
+            default :
+                throw new Error("mode:" + mode);
+            }
+
+        } else if (type < 27) {
+
+            // 10 - 26
+
+            switch(mode) {
+            case QRMode.MODE_NUMBER     : return 12;
+            case QRMode.MODE_ALPHA_NUM  : return 11;
+            case QRMode.MODE_8BIT_BYTE  : return 16;
+            case QRMode.MODE_KANJI      : return 10;
+            default :
+                throw new Error("mode:" + mode);
+            }
+
+        } else if (type < 41) {
+
+            // 27 - 40
+
+            switch(mode) {
+            case QRMode.MODE_NUMBER     : return 14;
+            case QRMode.MODE_ALPHA_NUM  : return 13;
+            case QRMode.MODE_8BIT_BYTE  : return 16;
+            case QRMode.MODE_KANJI      : return 12;
+            default :
+                throw new Error("mode:" + mode);
+            }
+
+        } else {
+            throw new Error("type:" + type);
+        }
+    },
+
+    getLostPoint : function(qrCode) {
+        
+        var moduleCount = qrCode.getModuleCount();
+        var lostPoint = 0;
+        var row = 0; 
+        var col = 0;
+
+        
+        // LEVEL1
+        
+        for (row = 0; row < moduleCount; row++) {
+
+            for (col = 0; col < moduleCount; col++) {
+
+                var sameCount = 0;
+                var dark = qrCode.isDark(row, col);
+
+                for (var r = -1; r <= 1; r++) {
+
+                    if (row + r < 0 || moduleCount <= row + r) {
+                        continue;
+                    }
+
+                    for (var c = -1; c <= 1; c++) {
+
+                        if (col + c < 0 || moduleCount <= col + c) {
+                            continue;
+                        }
+
+                        if (r === 0 && c === 0) {
+                            continue;
+                        }
+
+                        if (dark === qrCode.isDark(row + r, col + c) ) {
+                            sameCount++;
+                        }
+                    }
+                }
+
+                if (sameCount > 5) {
+                    lostPoint += (3 + sameCount - 5);
+                }
+            }
+        }
+
+        // LEVEL2
+
+        for (row = 0; row < moduleCount - 1; row++) {
+            for (col = 0; col < moduleCount - 1; col++) {
+                var count = 0;
+                if (qrCode.isDark(row,     col    ) ) count++;
+                if (qrCode.isDark(row + 1, col    ) ) count++;
+                if (qrCode.isDark(row,     col + 1) ) count++;
+                if (qrCode.isDark(row + 1, col + 1) ) count++;
+                if (count === 0 || count === 4) {
+                    lostPoint += 3;
+                }
+            }
+        }
+
+        // LEVEL3
+
+        for (row = 0; row < moduleCount; row++) {
+            for (col = 0; col < moduleCount - 6; col++) {
+                if (qrCode.isDark(row, col) && 
+                        !qrCode.isDark(row, col + 1) && 
+                         qrCode.isDark(row, col + 2) && 
+                         qrCode.isDark(row, col + 3) && 
+                         qrCode.isDark(row, col + 4) && 
+                        !qrCode.isDark(row, col + 5) && 
+                         qrCode.isDark(row, col + 6) ) {
+                    lostPoint += 40;
+                }
+            }
+        }
+
+        for (col = 0; col < moduleCount; col++) {
+            for (row = 0; row < moduleCount - 6; row++) {
+                if (qrCode.isDark(row, col) &&
+                        !qrCode.isDark(row + 1, col) &&
+                         qrCode.isDark(row + 2, col) &&
+                         qrCode.isDark(row + 3, col) &&
+                         qrCode.isDark(row + 4, col) &&
+                        !qrCode.isDark(row + 5, col) &&
+                         qrCode.isDark(row + 6, col) ) {
+                    lostPoint += 40;
+                }
+            }
+        }
+
+        // LEVEL4
+        
+        var darkCount = 0;
+
+        for (col = 0; col < moduleCount; col++) {
+            for (row = 0; row < moduleCount; row++) {
+                if (qrCode.isDark(row, col) ) {
+                    darkCount++;
+                }
+            }
+        }
+        
+        var ratio = Math.abs(100 * darkCount / moduleCount / moduleCount - 50) / 5;
+        lostPoint += ratio * 10;
+
+        return lostPoint;       
+    }
+
+};
+
+
+
+//---------------------------------------------------------------------
+// QRCode for JavaScript
+//
+// Copyright (c) 2009 Kazuhiko Arase
+//
+// URL: http://www.d-project.com/
+//
+// Licensed under the MIT license:
+//   http://www.opensource.org/licenses/mit-license.php
+//
+// The word "QR Code" is registered trademark of 
+// DENSO WAVE INCORPORATED
+//   http://www.denso-wave.com/qrcode/faqpatent-e.html
+//
+//---------------------------------------------------------------------
+// Modified to work in node for this project (and some refactoring)
+//---------------------------------------------------------------------
+
+
+
+
+
+
+
+function QRCode(typeNumber, errorCorrectLevel) {
+	this.typeNumber = typeNumber;
+	this.errorCorrectLevel = errorCorrectLevel;
+	this.modules = null;
+	this.moduleCount = 0;
+	this.dataCache = null;
+	this.dataList = [];
+}
+
+QRCode.prototype = {
+	
+	addData : function(data) {
+		var newData = new QR8bitByte(data);
+		this.dataList.push(newData);
+		this.dataCache = null;
+	},
+	
+	isDark : function(row, col) {
+		if (row < 0 || this.moduleCount <= row || col < 0 || this.moduleCount <= col) {
+			throw new Error(row + "," + col);
+		}
+		return this.modules[row][col];
+	},
+
+	getModuleCount : function() {
+		return this.moduleCount;
+	},
+	
+	make : function() {
+		// Calculate automatically typeNumber if provided is < 1
+		if (this.typeNumber < 1 ){
+			var typeNumber = 1;
+			for (typeNumber = 1; typeNumber < 40; typeNumber++) {
+				var rsBlocks = QRRSBlock.getRSBlocks(typeNumber, this.errorCorrectLevel);
+
+				var buffer = new QRBitBuffer();
+				var totalDataCount = 0;
+				for (var i = 0; i < rsBlocks.length; i++) {
+					totalDataCount += rsBlocks[i].dataCount;
+				}
+
+				for (var x = 0; x < this.dataList.length; x++) {
+					var data = this.dataList[x];
+					buffer.put(data.mode, 4);
+					buffer.put(data.getLength(), QRUtil.getLengthInBits(data.mode, typeNumber) );
+					data.write(buffer);
+				}
+				if (buffer.getLengthInBits() <= totalDataCount * 8)
+					break;
+			}
+			this.typeNumber = typeNumber;
+		}
+		this.makeImpl(false, this.getBestMaskPattern() );
+	},
+	
+	makeImpl : function(test, maskPattern) {
+		
+		this.moduleCount = this.typeNumber * 4 + 17;
+		this.modules = new Array(this.moduleCount);
+		
+		for (var row = 0; row < this.moduleCount; row++) {
+			
+			this.modules[row] = new Array(this.moduleCount);
+			
+			for (var col = 0; col < this.moduleCount; col++) {
+				this.modules[row][col] = null;//(col + row) % 3;
+			}
+		}
+	
+		this.setupPositionProbePattern(0, 0);
+		this.setupPositionProbePattern(this.moduleCount - 7, 0);
+		this.setupPositionProbePattern(0, this.moduleCount - 7);
+		this.setupPositionAdjustPattern();
+		this.setupTimingPattern();
+		this.setupTypeInfo(test, maskPattern);
+		
+		if (this.typeNumber >= 7) {
+			this.setupTypeNumber(test);
+		}
+	
+		if (this.dataCache === null) {
+			this.dataCache = QRCode.createData(this.typeNumber, this.errorCorrectLevel, this.dataList);
+		}
+	
+		this.mapData(this.dataCache, maskPattern);
+	},
+
+	setupPositionProbePattern : function(row, col)  {
+		
+		for (var r = -1; r <= 7; r++) {
+			
+			if (row + r <= -1 || this.moduleCount <= row + r) continue;
+			
+			for (var c = -1; c <= 7; c++) {
+				
+				if (col + c <= -1 || this.moduleCount <= col + c) continue;
+				
+				if ( (0 <= r && r <= 6 && (c === 0 || c === 6) ) || 
+                     (0 <= c && c <= 6 && (r === 0 || r === 6) ) || 
+                     (2 <= r && r <= 4 && 2 <= c && c <= 4) ) {
+					this.modules[row + r][col + c] = true;
+				} else {
+					this.modules[row + r][col + c] = false;
+				}
+			}		
+		}		
+	},
+	
+	getBestMaskPattern : function() {
+	
+		var minLostPoint = 0;
+		var pattern = 0;
+	
+		for (var i = 0; i < 8; i++) {
+			
+			this.makeImpl(true, i);
+	
+			var lostPoint = QRUtil.getLostPoint(this);
+	
+			if (i === 0 || minLostPoint >  lostPoint) {
+				minLostPoint = lostPoint;
+				pattern = i;
+			}
+		}
+	
+		return pattern;
+	},
+	
+	createMovieClip : function(target_mc, instance_name, depth) {
+	
+		var qr_mc = target_mc.createEmptyMovieClip(instance_name, depth);
+		var cs = 1;
+	
+		this.make();
+
+		for (var row = 0; row < this.modules.length; row++) {
+			
+			var y = row * cs;
+			
+			for (var col = 0; col < this.modules[row].length; col++) {
+	
+				var x = col * cs;
+				var dark = this.modules[row][col];
+			
+				if (dark) {
+					qr_mc.beginFill(0, 100);
+					qr_mc.moveTo(x, y);
+					qr_mc.lineTo(x + cs, y);
+					qr_mc.lineTo(x + cs, y + cs);
+					qr_mc.lineTo(x, y + cs);
+					qr_mc.endFill();
+				}
+			}
+		}
+		
+		return qr_mc;
+	},
+
+	setupTimingPattern : function() {
+		
+		for (var r = 8; r < this.moduleCount - 8; r++) {
+			if (this.modules[r][6] !== null) {
+				continue;
+			}
+			this.modules[r][6] = (r % 2 === 0);
+		}
+	
+		for (var c = 8; c < this.moduleCount - 8; c++) {
+			if (this.modules[6][c] !== null) {
+				continue;
+			}
+			this.modules[6][c] = (c % 2 === 0);
+		}
+	},
+	
+	setupPositionAdjustPattern : function() {
+	
+		var pos = QRUtil.getPatternPosition(this.typeNumber);
+		
+		for (var i = 0; i < pos.length; i++) {
+		
+			for (var j = 0; j < pos.length; j++) {
+			
+				var row = pos[i];
+				var col = pos[j];
+				
+				if (this.modules[row][col] !== null) {
+					continue;
+				}
+				
+				for (var r = -2; r <= 2; r++) {
+				
+					for (var c = -2; c <= 2; c++) {
+					
+						if (Math.abs(r) === 2 || 
+                            Math.abs(c) === 2 ||
+                            (r === 0 && c === 0) ) {
+							this.modules[row + r][col + c] = true;
+						} else {
+							this.modules[row + r][col + c] = false;
+						}
+					}
+				}
+			}
+		}
+	},
+	
+	setupTypeNumber : function(test) {
+	
+		var bits = QRUtil.getBCHTypeNumber(this.typeNumber);
+        var mod;
+	
+		for (var i = 0; i < 18; i++) {
+			mod = (!test && ( (bits >> i) & 1) === 1);
+			this.modules[Math.floor(i / 3)][i % 3 + this.moduleCount - 8 - 3] = mod;
+		}
+	
+		for (var x = 0; x < 18; x++) {
+			mod = (!test && ( (bits >> x) & 1) === 1);
+			this.modules[x % 3 + this.moduleCount - 8 - 3][Math.floor(x / 3)] = mod;
+		}
+	},
+	
+	setupTypeInfo : function(test, maskPattern) {
+	
+		var data = (this.errorCorrectLevel << 3) | maskPattern;
+		var bits = QRUtil.getBCHTypeInfo(data);
+        var mod;
+	
+		// vertical		
+		for (var v = 0; v < 15; v++) {
+	
+			mod = (!test && ( (bits >> v) & 1) === 1);
+	
+			if (v < 6) {
+				this.modules[v][8] = mod;
+			} else if (v < 8) {
+				this.modules[v + 1][8] = mod;
+			} else {
+				this.modules[this.moduleCount - 15 + v][8] = mod;
+			}
+		}
+	
+		// horizontal
+		for (var h = 0; h < 15; h++) {
+	
+			mod = (!test && ( (bits >> h) & 1) === 1);
+			
+			if (h < 8) {
+				this.modules[8][this.moduleCount - h - 1] = mod;
+			} else if (h < 9) {
+				this.modules[8][15 - h - 1 + 1] = mod;
+			} else {
+				this.modules[8][15 - h - 1] = mod;
+			}
+		}
+	
+		// fixed module
+		this.modules[this.moduleCount - 8][8] = (!test);
+	
+	},
+	
+	mapData : function(data, maskPattern) {
+		
+		var inc = -1;
+		var row = this.moduleCount - 1;
+		var bitIndex = 7;
+		var byteIndex = 0;
+		
+		for (var col = this.moduleCount - 1; col > 0; col -= 2) {
+	
+			if (col === 6) col--;
+	
+			while (true) {
+	
+				for (var c = 0; c < 2; c++) {
+					
+					if (this.modules[row][col - c] === null) {
+						
+						var dark = false;
+	
+						if (byteIndex < data.length) {
+							dark = ( ( (data[byteIndex] >>> bitIndex) & 1) === 1);
+						}
+	
+						var mask = QRUtil.getMask(maskPattern, row, col - c);
+	
+						if (mask) {
+							dark = !dark;
+						}
+						
+						this.modules[row][col - c] = dark;
+						bitIndex--;
+	
+						if (bitIndex === -1) {
+							byteIndex++;
+							bitIndex = 7;
+						}
+					}
+				}
+								
+				row += inc;
+	
+				if (row < 0 || this.moduleCount <= row) {
+					row -= inc;
+					inc = -inc;
+					break;
+				}
+			}
+		}
+		
+	}
+
+};
+
+QRCode.PAD0 = 0xEC;
+QRCode.PAD1 = 0x11;
+
+QRCode.createData = function(typeNumber, errorCorrectLevel, dataList) {
+	
+	var rsBlocks = QRRSBlock.getRSBlocks(typeNumber, errorCorrectLevel);
+	
+	var buffer = new QRBitBuffer();
+	
+	for (var i = 0; i < dataList.length; i++) {
+		var data = dataList[i];
+		buffer.put(data.mode, 4);
+		buffer.put(data.getLength(), QRUtil.getLengthInBits(data.mode, typeNumber) );
+		data.write(buffer);
+	}
+
+	// calc num max data.
+	var totalDataCount = 0;
+	for (var x = 0; x < rsBlocks.length; x++) {
+		totalDataCount += rsBlocks[x].dataCount;
+	}
+
+	if (buffer.getLengthInBits() > totalDataCount * 8) {
+		throw new Error("code length overflow. (" + 
+            buffer.getLengthInBits() + 
+            ">" +  
+            totalDataCount * 8 + 
+            ")");
+	}
+
+	// end code
+	if (buffer.getLengthInBits() + 4 <= totalDataCount * 8) {
+		buffer.put(0, 4);
+	}
+
+	// padding
+	while (buffer.getLengthInBits() % 8 !== 0) {
+		buffer.putBit(false);
+	}
+
+	// padding
+	while (true) {
+		
+		if (buffer.getLengthInBits() >= totalDataCount * 8) {
+			break;
+		}
+		buffer.put(QRCode.PAD0, 8);
+		
+		if (buffer.getLengthInBits() >= totalDataCount * 8) {
+			break;
+		}
+		buffer.put(QRCode.PAD1, 8);
+	}
+
+	return QRCode.createBytes(buffer, rsBlocks);
+};
+
+QRCode.createBytes = function(buffer, rsBlocks) {
+
+	var offset = 0;
+	
+	var maxDcCount = 0;
+	var maxEcCount = 0;
+	
+	var dcdata = new Array(rsBlocks.length);
+	var ecdata = new Array(rsBlocks.length);
+	
+	for (var r = 0; r < rsBlocks.length; r++) {
+
+		var dcCount = rsBlocks[r].dataCount;
+		var ecCount = rsBlocks[r].totalCount - dcCount;
+
+		maxDcCount = Math.max(maxDcCount, dcCount);
+		maxEcCount = Math.max(maxEcCount, ecCount);
+		
+		dcdata[r] = new Array(dcCount);
+		
+		for (var i = 0; i < dcdata[r].length; i++) {
+			dcdata[r][i] = 0xff & buffer.buffer[i + offset];
+		}
+		offset += dcCount;
+		
+		var rsPoly = QRUtil.getErrorCorrectPolynomial(ecCount);
+		var rawPoly = new QRPolynomial(dcdata[r], rsPoly.getLength() - 1);
+
+		var modPoly = rawPoly.mod(rsPoly);
+		ecdata[r] = new Array(rsPoly.getLength() - 1);
+		for (var x = 0; x < ecdata[r].length; x++) {
+            var modIndex = x + modPoly.getLength() - ecdata[r].length;
+			ecdata[r][x] = (modIndex >= 0)? modPoly.get(modIndex) : 0;
+		}
+
+	}
+	
+	var totalCodeCount = 0;
+	for (var y = 0; y < rsBlocks.length; y++) {
+		totalCodeCount += rsBlocks[y].totalCount;
+	}
+
+	var data = new Array(totalCodeCount);
+	var index = 0;
+
+	for (var z = 0; z < maxDcCount; z++) {
+		for (var s = 0; s < rsBlocks.length; s++) {
+			if (z < dcdata[s].length) {
+				data[index++] = dcdata[s][z];
+			}
+		}
+	}
+
+	for (var xx = 0; xx < maxEcCount; xx++) {
+		for (var t = 0; t < rsBlocks.length; t++) {
+			if (xx < ecdata[t].length) {
+				data[index++] = ecdata[t][xx];
+			}
+		}
+	}
+
+	return data;
+
+};
+
+
+
+</script>
 <script>
 (()=>{
 'use strict';
@@ -36,6 +1275,48 @@ const KEY='harmoniq-demo-multievent-v1', CHANNEL='harmoniq-demo-multievent-v1';
 const COLORS={violet:'#7851e9',pink:'#e45fc2',teal:'#34c9b0',gold:'#fac779',blue:'#5c80ff'};
 const sequence=[{at:0,label:'Violet pulse',color:COLORS.violet},{at:4,label:'Pink wave',color:COLORS.pink},{at:8,label:'Ocean glow',color:COLORS.teal},{at:12,label:'Finale',color:COLORS.gold}];
 const baseline={activeTab:'overview',view:'studio',eventName:'MIDNIGHT FESTIVAL',attendees:86,color:COLORS.violet,lightMode:'idle',lightStarted:0,lightName:'Aurora Wave',poll:{question:'Which track should play next?',options:['Euphoria','Afterglow','The Final Beat'],votes:[13,8,3],open:false,version:1},quiz:{question:'What colour comes next in the Aurora Wave?',options:['Electric blue','Violet','Amber'],correct:1,open:false,version:1},announcement:'The next light moment starts in 2 minutes. Keep this page open to join the wave.',announcementSent:false,sponsorActive:false,rewardCount:18,lightLaunchCount:0,updated:Date.now()};
+
+const TYPES={
+ concert:{label:'Concert / Festival',modules:['lights','poll','quiz','announcements','sponsors','rewards','analytics','display'],description:'Audience colour, voting and sponsor activations'},
+ corporate:{label:'Corporate Conference',modules:['poll','quiz','announcements','analytics','display'],description:'Q&A-style polls, training quizzes and reporting'},
+ university:{label:'University Event',modules:['poll','quiz','announcements','analytics','display','rewards'],description:'Campus welcome, short quizzes and announcements'},
+ pub:{label:'Pub / Quiz Night',modules:['poll','quiz','announcements','rewards','sponsors','analytics','display'],description:'Trivia, limited offers and quick polls'}
+};
+const MODULES={lights:'Light experience',poll:'Live polling',quiz:'Quiz & trivia',announcements:'Announcements',sponsors:'Sponsor moments',rewards:'Rewards & offers',analytics:'Basic analytics',display:'Live display'};
+const SEQUENCES={
+ aurora:{name:'Aurora Wave',stages:[{at:0,label:'Violet pulse',color:COLORS.violet},{at:4,label:'Pink wave',color:COLORS.pink},{at:8,label:'Ocean glow',color:COLORS.teal},{at:12,label:'Finale',color:COLORS.gold}],duration:16},
+ focus:{name:'Focus Pulse',stages:[{at:0,label:'Teal focus',color:COLORS.teal},{at:3,label:'Blue rise',color:COLORS.blue},{at:6,label:'Violet focus',color:COLORS.violet},{at:9,label:'Blue finale',color:COLORS.blue}],duration:12}
+};
+function categoryOf(e){return TYPES[e?.category]?e.category:'concert'}
+function enabledFor(e,key){return Boolean((e.modules||TYPES[categoryOf(e)].modules).includes(key))}
+function defaultBank(cat){let x={concert:[{type:'choice',question:'Which track should play next?',options:['Euphoria','Afterglow','The Final Beat']},{type:'yesno',question:'Are you ready for the next light show?',options:['Yes','No']},{type:'choice',question:'Which moment was your favourite?',options:['Lighting','Music','Trivia']}],corporate:[{type:'choice',question:'Which session was most useful?',options:['Strategy','Innovation','Networking']},{type:'yesno',question:'Would you join another session?',options:['Yes','No']},{type:'choice',question:'What should we cover next?',options:['Technology','Leadership','Operations']}],university:[{type:'choice',question:'Which welcome activity comes next?',options:['Campus tour','Team quiz','Music']},{type:'yesno',question:'Did you find your welcome information?',options:['Yes','No']},{type:'choice',question:'Which club interests you?',options:['Sports','Arts','Technology']}],pub:[{type:'choice',question:'Choose tonight’s trivia theme',options:['Music','Sport','History']},{type:'yesno',question:'Ready for the final round?',options:['Yes','No']},{type:'choice',question:'Next theme?',options:['Movies','Food','Travel']}]}[cat]||[];return clone(x)}
+function upgradeEvent(e){
+ e.category=categoryOf(e);e.visibility=e.visibility==='private'?'private':'public';if(!Array.isArray(e.modules))e.modules=[...TYPES[e.category].modules];
+ const s=e.state;if(!s)return;
+ if(!Array.isArray(s.pollBank)||!s.pollBank.length)s.pollBank=defaultBank(e.category);
+ if(!Number.isInteger(s.pollIndex))s.pollIndex=0;
+ if(!Array.isArray(s.poll.votes))s.poll.votes=[];
+ if(!s.sequenceId)s.sequenceId='aurora';
+ if(!s.sponsor)s.sponsor={name:'NOVA AUDIO',headline:'BEYOND THE SOUND',offer:'10% off event merchandise',expiry:'',limit:25};
+ if(!Array.isArray(s.claims))s.claims=[];
+ if(!Array.isArray(s.feedback))s.feedback=[];
+ if(!s.joinedSessions)s.joinedSessions=[];
+ if(!Number.isFinite(s.quizResponses))s.quizResponses=0;
+ if(!Number.isFinite(s.pollLaunchCount))s.pollLaunchCount=0;
+ if(!Number.isFinite(s.messagesSent))s.messagesSent=0;
+}
+function makeSeedEvent(id,code,name,venue,date,category,status='live'){
+ const e={id,code,name,venue,date,category,status,visibility:'public',modules:[...TYPES[category].modules],state:newEventState(name)};
+ upgradeEvent(e);e.state.poll=Object.assign(e.state.poll,{...e.state.pollBank[0],votes:new Array(e.state.pollBank[0].options.length).fill(0),open:false});
+ if(category==='corporate')e.state.quiz={question:'What is the focus of our innovation session?',options:['Customer value','Office furniture','Parking'],correct:0,open:false,version:1};
+ if(category==='university')e.state.quiz={question:'Which service helps new students find their way?',options:['Welcome desk','Rewards programme','Lighting'],correct:0,open:false,version:1};
+ return e;
+}
+function shareUrl(e){return location.origin+location.pathname+'?view=attendee&event='+encodeURIComponent(e.code)}
+function realQR(data,size=160){try{const qr=new QRCode(-1,QRErrorCorrectLevel.M);qr.addData(data);qr.make();const n=qr.getModuleCount(),margin=4;let path='';for(let y=0;y<n;y++)for(let x=0;x<n;x++)if(qr.isDark(y,x))path+='M'+(x+margin)+' '+(y+margin)+'h1v1h-1z';return '<svg role="img" aria-label="Scannable QR code" viewBox="0 0 '+(n+margin*2)+' '+(n+margin*2)+'" width="'+size+'" height="'+size+'" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="#fff"/><path fill="#181023" d="'+path+'"/></svg>'}catch(e){return '<span class="small" style="color:#321">QR unavailable: use event code</span>'}}
+function eventShareSection(e){return '<div class="panel"><h2>Invite attendees</h2><p class="descr">Share a real QR or a dedicated event URL. Public events appear in the attendee lobby; private events are code/link only.</p><div class="share-row"><div class="qr-real">'+realQR(shareUrl(e))+'</div><div style="flex:1;min-width:185px"><div class="kicker">EVENT ACCESS · '+esc(e.visibility.toUpperCase())+'</div><p class="mono">'+esc(e.code)+'</p><p class="short-link">'+esc(shareUrl(e))+'</p><div class="row"><button class="btn secondary" data-action="copy-event-link">Copy invite link</button><button class="btn ghost" data-action="save-event-qr">Save QR</button></div></div></div></div>'}
+function selectedReport(e){const s=e.state;const votes=s.pollBank?.length?s.poll.votes.reduce((a,b)=>a+b,0):0;const used=s.claims.filter(c=>c.used).length;const answered=Number(s.quizResponses||0);const ratings=s.feedback||[];const mean=ratings.length?(ratings.reduce((a,b)=>a+b.rating,0)/ratings.length).toFixed(1):'—';return {attendees:s.attendees,votes,answered,lightShows:s.lightLaunchCount,announcements:s.messagesSent,claims:s.claims.length,redeemed:used,feedback:ratings.length,avgRating:mean}}
+
 function clone(x){return JSON.parse(JSON.stringify(x))}
 function newEventState(name,seed=false){
  const b=clone(baseline);b.eventName=name.toUpperCase();
@@ -48,7 +1329,7 @@ function seededDatabase(){
  const second=newEventState('City Beats Live');second.poll.question='Which act should play next?';second.poll.options=['Neon Echo','Northern Lights','Echo Pulse'];second.quiz.question='Which city hosts this demo event?';second.quiz.options=['Manchester','Bristol','London'];second.quiz.correct=0;
  return {version:1,events:[{id:'evt-midnight',code:'NIGHT26',name:'Midnight Festival',venue:'London · O2-inspired demo venue',date:'2026-11-14',status:'live',category:'Concert',state:first},{id:'evt-citybeats',code:'BEATS26',name:'City Beats Live',venue:'Manchester · Demo Arena',date:'2026-11-28',status:'live',category:'Music Festival',state:second}]};
 }
-function readDatabase(){try{const d=JSON.parse(localStorage.getItem(KEY)||'null');if(d&&Array.isArray(d.events)&&d.events.length&&d.events.every(x=>x.state?.poll&&x.state?.quiz))return d;}catch(e){}return seededDatabase();}
+function readDatabase(){let d;try{d=JSON.parse(localStorage.getItem(KEY)||'null')}catch(e){}if(!d||!Array.isArray(d.events)||!d.events.length||!d.events.every(x=>x.state?.poll&&x.state?.quiz))d=seededDatabase();for(const e of d.events)upgradeEvent(e);if(d.version!==2){if(!d.events.some(e=>e.code==='SUMMIT26'))d.events.push(makeSeedEvent('evt-summit','SUMMIT26','Harmoniq Business Summit','London · Corporate demo venue','2026-12-03','corporate'));if(!d.events.some(e=>e.code==='CAMPUS26'))d.events.push(makeSeedEvent('evt-campus','CAMPUS26','University Welcome Week','Bristol · Campus demo venue','2026-12-10','university'));d.version=2;try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}}return d}
 let db=readDatabase(),view=initialView,tab='overview',audiencePage='home',stageMode='welcome',editingEventId=null;
 function findEvent(ref){return db.events.find(e=>e.id===ref||e.code===String(ref||'').toUpperCase())||null;}
 let organiserEventId=sessionStorage.getItem('hm-organiser-event')||db.events[0].id;
@@ -74,55 +1355,90 @@ function joinEventByCode(code){const found=findEvent(String(code||'').trim().toU
  audiencePage='home';view='attendee';refreshActive();draw();toast('Joined '+found.name+'!');return true;
 }
 function leaveEvent(){const prev=sessionStorage.getItem('hm-joined-current');if(prev)updateDatabase(d=>{const old=d.events.find(e=>e.id===prev);if(old)old.state.attendees=Math.max(0,old.state.attendees-1)});sessionStorage.removeItem('hm-joined-current');sessionStorage.removeItem('hm-attendee-event');attendeeEventId=null;joined=false;audiencePage='home';refreshActive();draw();}
-function eventsManagement(){const list=db.events.map(e=>`<article class="event-card ${e.id===organiserEventId?'focused':''}"><div class="event-meta"><span class="event-status ${esc(e.status)}">${e.status.toUpperCase()}</span><span class="event-code">${esc(e.code)}</span></div><h3>${esc(e.name)}</h3><p>${esc(e.venue||'No venue selected')} · ${esc(e.date||'Date TBC')}</p><div class="event-kpis">${e.state.attendees} demo attendees · ${e.state.poll.votes.reduce((a,b)=>a+b,0)} poll votes · ${e.state.lightLaunchCount} light shows</div><div class="event-actions"><button class="btn ${e.id===organiserEventId?'secondary':''}" data-select-event="${esc(e.id)}">${e.id===organiserEventId?'✓ Selected':'Manage event →'}</button><button class="btn ghost" data-edit-event="${esc(e.id)}">Edit</button><button class="btn ghost" data-toggle-event="${esc(e.id)}">${e.status==='live'?'Pause entry':'Open entry'}</button></div></article>`).join('');
- const edit=db.events.find(e=>e.id===editingEventId);return `${heading('EVENT MANAGEMENT / MULTI EVENT','Your events','Create separate event spaces, each with its own joining code, lighting, polls and analytics.')}<div class="grid-3" style="margin-bottom:19px">${stat(db.events.length,'Events created','Independent event profiles')}${stat(db.events.filter(e=>e.status==='live').length,'Open for entry','Attendees can join')}${stat(db.events.reduce((a,e)=>a+e.state.attendees,0),'Demo attendees','Across all events')}</div><div class="panel"><h2>Manage your events</h2><p class="descr">Select an event to control it. Changing event does not change other events' data.</p><div class="event-list">${list}</div></div><div class="panel"><h2>${edit?'Edit event details':'Create a new event'}</h2><p class="descr">Give each event a unique code. Attendees can enter the code or choose an open event from their joining screen.</p><div class="event-form"><div class="field"><label>Event name *</label><input class="input" id="manage-event-name" maxlength="80" placeholder="e.g. Harmoniq Summer Live" value="${esc(edit?.name||'')}"></div><div class="field"><label>Event access code *</label><input class="input" id="manage-event-code" maxlength="16" placeholder="e.g. SUMMER26" value="${esc(edit?.code||'')}"></div><div class="field"><label>Venue / location</label><input class="input" id="manage-event-venue" maxlength="120" placeholder="e.g. Birmingham Demo Arena" value="${esc(edit?.venue||'')}"></div><div class="field"><label>Event date</label><input class="input" id="manage-event-date" type="date" value="${esc(edit?.date||'')}"></div><div class="field span-2"><label>Entry status</label><select class="input" id="manage-event-status"><option value="live" ${(!edit||edit.status==='live')?'selected':''}>Open — attendees can join</option><option value="draft" ${edit?.status==='draft'?'selected':''}>Draft — not joinable</option><option value="closed" ${edit?.status==='closed'?'selected':''}>Closed — entry disabled</option></select></div><div class="row span-2"><button class="btn" data-action="save-event">${edit?'Save event changes':'Create event →'}</button>${edit?'<button class="btn ghost" data-action="cancel-event-edit">Cancel editing</button>':''}</div></div><p class="event-help">New events start with zero audience members and votes. Every event has an independent light mode, poll, quiz and sponsor moment. All data is stored locally in this browser for demonstration only.</p></div>`;
+
+function eventsManagement(){
+ const list=db.events.map(e=>`<article class="event-card ${e.id===organiserEventId?'focused':''}"><div class="event-meta"><span class="event-status ${esc(e.status)}">${e.status.toUpperCase()}</span><span class="event-code">${esc(e.code)}</span><span class="type-chip">${esc(TYPES[categoryOf(e)].label)}</span></div><h3>${esc(e.name)}</h3><p>${esc(e.venue||'Location TBC')} · ${esc(e.date||'Date TBC')} · ${esc(e.visibility)}</p><div class="event-kpis">${e.state.attendees} demo participants · ${e.state.lightLaunchCount} light launches · ${e.state.pollLaunchCount} poll rounds</div><div class="event-actions"><button class="btn ${e.id===organiserEventId?'secondary':''}" data-select-event="${esc(e.id)}">${e.id===organiserEventId?'✓ Selected':'Manage event →'}</button><button class="btn ghost" data-edit-event="${esc(e.id)}">Edit</button><button class="btn ghost" data-toggle-event="${esc(e.id)}">${e.status==='live'?'Pause entry':'Open entry'}</button></div></article>`).join('');
+ const e=db.events.find(e=>e.id===editingEventId);const c=e?categoryOf(e):'concert',modules=e?.modules||TYPES[c].modules;
+ const categoryOptions=Object.entries(TYPES).map(([k,v])=>`<option value="${k}" ${c===k?'selected':''}>${esc(v.label)}</option>`).join('');
+ const moduleChecks=Object.entries(MODULES).map(([key,label])=>`<label class="module-check"><input type="checkbox" data-event-module="${key}" ${modules.includes(key)?'checked':''} /><span>${esc(label)}</span></label>`).join('');
+ return `${heading('ORGANISER / MULTI EVENT','Manage your events','Each event has an independent audience, activities, enabled modules, invite link and report.')}
+ <div class="grid-3" style="margin-bottom:20px">${stat(db.events.length,'Events created','Stored in this browser')}${stat(db.events.filter(e=>e.status==='live').length,'Open for entry','Public and code-only')}${stat(db.events.reduce((a,e)=>a+e.state.attendees,0),'Demo attendees','Illustrative / local')}</div>
+ <div class="panel"><h2>Event portfolio</h2><p class="descr">Switch among concert, corporate, university and pub event templates. Manage each event independently.</p><div class="event-list">${list}</div></div>
+ <div class="panel"><h2>${e?'Edit event & modules':'Create a new event'}</h2><p class="descr">Select a use-case template, then enable only the experiences appropriate for that customer.</p>
+ <div class="event-form"><div class="field"><label>Event name *</label><input class="input" id="manage-event-name" maxlength="80" placeholder="e.g. Innovation Day" value="${esc(e?.name||'')}"></div><div class="field"><label>Event access code *</label><input class="input" id="manage-event-code" maxlength="16" placeholder="e.g. INNOV26" value="${esc(e?.code||'')}"></div>
+ <div class="field"><label>Event type / template</label><select class="input" id="manage-event-category">${categoryOptions}</select></div>
+ <div class="field"><label>Visibility</label><select class="input" id="manage-event-visibility"><option value="public" ${!e||e.visibility!=='private'?'selected':''}>Public — listed for attendees</option><option value="private" ${e?.visibility==='private'?'selected':''}>Private — code or link only</option></select></div>
+ <div class="field"><label>Venue / location</label><input class="input" id="manage-event-venue" maxlength="120" placeholder="e.g. London Innovation Centre" value="${esc(e?.venue||'')}"></div>
+ <div class="field"><label>Event date</label><input class="input" id="manage-event-date" type="date" value="${esc(e?.date||'')}"></div>
+ <div class="field span-2"><label>Entry status</label><select class="input" id="manage-event-status"><option value="live" ${(!e||e.status==='live')?'selected':''}>Open — attendee entry allowed</option><option value="draft" ${e?.status==='draft'?'selected':''}>Draft — entry closed</option><option value="closed" ${e?.status==='closed'?'selected':''}>Closed — event completed</option></select></div>
+ <div class="field span-2"><label>Enabled modules</label><div class="check-grid" id="module-checkboxes">${moduleChecks}</div><p class="small muted">Audience navigation and organiser tools follow the modules selected here.</p></div>
+ <div class="row span-2"><button class="btn" data-action="save-event">${e?'Save event changes':'Create event →'}</button>${e?'<button class="btn ghost" data-action="cancel-event-edit">Cancel editing</button>':''}</div></div></div>
+ ${eventShareSection(event)}
+ <div class="notice-warn">Demo mode: events and participant interactions are stored in this browser profile only. A GitHub Pages URL does not provide a shared cloud database or real cross-device synchronisation.</div>`;
 }
-function availableEventsForAudience(){return db.events.filter(e=>e.status==='live').map(e=>`<button class="event-lobby-card" data-join-code="${esc(e.code)}"><strong>${esc(e.name)}</strong><span>${esc(e.venue||'Demo venue')} · CODE ${esc(e.code)} →</span></button>`).join('')||'<div class="mini-label">No events are currently accepting attendees.</div>';}
+
+function availableEventsForAudience(){return db.events.filter(e=>e.status==='live'&&e.visibility!=='private').map(e=>`<button class="event-lobby-card" data-join-code="${esc(e.code)}"><strong>${esc(e.name)}</strong><span>${esc(TYPES[categoryOf(e)].label)} · ${esc(e.venue||'Demo venue')} · CODE ${esc(e.code)} →</span></button>`).join('')||'<div class="mini-label">No public events are currently accepting attendees. Private events require a code or invite link.</div>'}
 function eventOptions(selected){return db.events.map(e=>`<option value="${esc(e.id)}" ${e.id===selected?'selected':''}>${esc(e.name)} (${esc(e.code)})</option>`).join('')}
 
 function esc(str){return String(str??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]))}
 function toast(s){const n=document.getElementById('toast');n.textContent=s;n.classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>n.classList.remove('show'),3000)}
-function icon(name){const d={events:'▦',overview:'◫',lights:'✦',poll:'◉',quiz:'★',announcements:'◈',sponsors:'◆',rewards:'◇',analytics:'▥',future:'↗'};return d[name]||'◆'}
-function currentLight(){if(state.lightMode==='sequence'&&state.lightStarted){let t=(Date.now()-state.lightStarted)/1000;if(t>=16)return {color:COLORS.violet,label:'Sequence complete',done:true};return {...sequence.filter(s=>t>=s.at).slice(-1)[0],progress:Math.round(t/16*100)};}return {color:state.color,label:state.lightMode==='solid'?'Single colour active':'Waiting for light show',done:false}}
+function icon(name){const d={events:'▦',overview:'◫',lights:'✦',poll:'◉',quiz:'★',announcements:'◈',sponsors:'◆',rewards:'◇',analytics:'▥',report:'▤',business:'£',future:'↗'};return d[name]||'•'}
+function currentLight(){if(state.lightMode==='sequence'&&state.lightStarted){const seq=SEQUENCES[state.sequenceId]||SEQUENCES.aurora,t=(Date.now()-state.lightStarted)/1000;if(t>=seq.duration)return {color:state.color,label:'Sequence complete',done:true};let stage=seq.stages[0];for(const st of seq.stages)if(t>=st.at)stage=st;return {color:stage.color,label:stage.label,done:false}}if(state.lightMode==='solid')return {color:state.color,label:'Solid crowd colour',done:false};return {color:state.color,label:'Standby',done:false}}
 function lightBanner(){let l=currentLight();return `<div class="lighting-stage" style="background:radial-gradient(ellipse at center,${l.color},#26173c 83%)"><div><span>${esc(l.label)}</span><strong>${state.lightMode==='sequence'&&!l.done?'AURORA WAVE':'LIGHT STUDIO'}</strong></div></div>`}
 function qrMarkup(size=140){let squares='';let s=13;for(let y=0;y<s;y++)for(let x=0;x<s;x++){let corners=((x<4&&y<4)||(x>8&&y<4)||(x<4&&y>8));let on=corners?(x===0||x===3||y===0||y===3||(x===1&&y===1)||(x===10&&y===1)||(x===1&&y===10)):((x*13+y*17+x*y*7)%7<3);if(on)squares+=`<rect x="${x*8}" y="${y*8}" width="8" height="8" fill="#231b36"/>`;}return `<svg width="${size}" height="${size}" viewBox="0 0 104 104" aria-label="Decorative demo QR, not redeemable"><rect width="104" height="104" fill="white"/>${squares}</svg>`}
 function statusPill(){return `<span class="pill live">● LIVE DEMO · ${state.attendees} connected</span>`}
 function topbar(){return `<div class="topbar"><div class="topbar-brand"><div><div class="kicker">Harmoniq / Organiser</div><div class="crumb">${esc(event.name)} · Code ${esc(event.code)} · Interactive concept</div></div></div><div class="actions"><label class="event-switch-label">EVENT <select class="event-switch" id="organiser-event-switch">${eventOptions(organiserEventId)}</select></label>${statusPill()}<button class="btn ghost small-btn" data-action="open-audience">↗ Audience</button><button class="btn ghost small-btn" data-action="open-display">▣ Display</button><button class="btn secondary small-btn" data-action="open-hub">Explore</button><button class="btn ghost small-btn" data-action="reset-demo" title="Reset the currently selected event only">Reset event</button></div></div>`}
-function sidebar(){let sections=[['EVENTS',['events']],['CONTROL',['overview','lights','poll','quiz','announcements']],['COMMERCIAL',['sponsors','rewards','analytics']],['ROADMAP',['future']]];return `<aside class="sidebar"><div class="brand"><span class="logo-mark">✦</span>HARMONIQ</div>${sections.map(([name,ls])=>`<div class="nav-label">${name}</div><div class="nav-group">${ls.map(k=>`<button class="nav-btn ${tab===k?'active':''}" data-tab="${k}"><span style="font-size:20px;width:20px">${icon(k)}</span>${({events:'All events',overview:'Overview',lights:'Light control',poll:'Live polls',quiz:'Quiz & trivia',announcements:'Announcements',sponsors:'Sponsor moments',rewards:'Rewards & offers',analytics:'Analytics',future:'Future features'})[k]}</button>`).join('')}</div>`).join('')}<div class="sidebar-foot"><span class="badge">CONCEPT / UK</span><p>Prototype with simulated analytics and shared browser-tab interactions.</p></div></aside>`}
+function sidebar(){let sections=[['EVENTS',['events']],['CONTROL',['overview','lights','poll','quiz','announcements']],['COMMERCIAL',['sponsors','rewards','analytics','report']],['ROADMAP',['future','business']]];let names={events:'All events',overview:'Overview',lights:'Light control',poll:'Live polls',quiz:'Quiz & trivia',announcements:'Announcements',sponsors:'Sponsor moments',rewards:'Rewards & offers',analytics:'Analytics',report:'Event report',future:'Future features',business:'Business model'};return `<aside class="sidebar"><div class="brand"><span class="logo-mark">✦</span>HARMONIQ</div>${sections.map(([name,ls])=>`<div class="nav-label">${name}</div><div class="nav-group">${ls.map(k=>`<button class="nav-btn ${tab===k?'active':''} ${MODULES[k]&&!enabledFor(event,k)?'module-off':''}" data-tab="${k}" ${MODULES[k]&&!enabledFor(event,k)?'title="Enable this module in Event settings"':''}><span style="font-size:20px;width:20px">${icon(k)}</span>${names[k]||k}${MODULES[k]&&!enabledFor(event,k)?' · off':''}</button>`).join('')}</div>`).join('')}<div class="sidebar-foot"><span class="badge">PRE-MVP · UK / B2B</span><p>Demonstration data is browser-local. No real customer accounts, billing or device sync.</p></div></aside>`}
 function heading(k,t,sub){return `<div class="kicker">${k}</div><h1 class="hero-title">${t}</h1><p class="lead">${sub}</p>`}
 function stat(v,label,sub){return `<div class="stat"><strong>${esc(v)}</strong><span>${esc(label)}</span><em>${esc(sub)}</em></div>`}
-function organizerContent(){if(tab==='events')return eventsManagement();if(tab==='overview')return `${heading('Event control room','Make the crowd part of the show.','One live control centre for lights, audience engagement and commercial moments.')}<div class="grid-3" style="margin-bottom:22px">${stat(state.attendees,'Connected attendees','Selected event only')}${stat(totalVotes(),'Poll votes recorded','Selected event only')}${stat(state.lightLaunchCount,'Light shows launched','Selected event only')}</div><div class="panel"><h2>Launch an experience</h2><p class="descr">Select a live moment. Changes are mirrored into the audience preview and other same-origin browser tabs.</p><div class="module-grid">${[['lights','✦','Light experience','Control phone colours and sequences'],['poll','◉','Live polling','Let the crowd choose what comes next'],['quiz','★','Interactive trivia','Start a simple multiple-choice round'],['announcements','◈','Announcements','Send a message to connected users'],['sponsors','◆','Sponsor moment','Activate a branded takeover'],['analytics','▥','Engagement insights','Watch simulated pilot-level metrics']].map(([k,i,t,d])=>`<button class="module" data-tab="${k}"><div class="module-icon">${i}</div><b>${t}</b><p>${d}</p><span>Launch module →</span></button>`).join('')}</div></div>`;
-if(tab==='lights')return `${heading('EXPERIENCE / LIGHTING','Light experience','Control the screen colour of attendees or launch a preloaded, clock-timed sequence.')}${lightBanner()}<div class="panel"><h2>Choose a crowd colour</h2><p class="descr">Solid mode changes the light display immediately. This is a prototype simulation.</p><div class="color-list">${Object.entries(COLORS).map(([key,color])=>`<button title="${key}" aria-label="Select ${key}" class="swatch ${state.color===color?'selected':''}" data-color="${key}" style="background:${color}"></button>`).join('')}</div><div class="row"><button class="btn" data-action="activate-solid">Apply selected colour →</button><button class="btn ghost" data-action="stop-light">Stop lighting</button></div></div><div class="panel"><h2>Preloaded sequences</h2><p class="descr">The Aurora Wave runs through four colours at 4-second intervals, based on a common start timestamp. Keep the audience view open to preview.</p><div class="scene-row"><div><strong>✦ Aurora Wave</strong><p>Violet → Pink → Teal → Gold · 16 seconds</p></div><button class="btn" data-action="start-sequence">▶ Launch</button></div><p class="tooltip">For pilot hardware, exact synchronization and offline reliability still require validation.</p></div>`;
-if(tab==='poll')return `${heading('ENGAGEMENT / LIVE','Poll manager','Launch or close a live poll and watch audience responses appear as they are recorded.')}<div class="panel"><h2>Build a live question</h2><div class="field"><label>Poll question</label><input id="poll-question" class="input" maxlength="125" value="${esc(state.poll.question)}"></div><div class="option-editor">${state.poll.options.map((o,i)=>`<div class="field"><label>Option ${String.fromCharCode(65+i)}</label><input class="input" id="poll-option-${i}" value="${esc(o)}" maxlength="56" /></div>`).join('')}</div><div class="row"><button class="btn secondary" data-action="save-poll">Save question</button><button class="btn" data-action="launch-poll">${state.poll.open?'Restart polling':'Launch live poll'} →</button><button class="btn ghost" data-action="close-poll">Close poll</button></div><p class="tooltip">Launching starts a fresh round with zero votes. Preview shows initial example results until you launch.</p></div><div class="panel"><h2>Current results <span class="badge">${state.poll.open?'LIVE':'PREVIEW'}</span></h2>${pollBars()}<p class="small muted">${totalVotes()} votes · Demo data plus current interactions</p></div>`;
+function organizerContent(){if(tab==='events')return eventsManagement();if(MODULES[tab]&&!enabledFor(event,tab))return `${heading('MODULE DISABLED','Module not enabled',`The ${esc(MODULES[tab])} module is not active for ${esc(event.name)}.`)}<div class="panel"><p class="descr">Open All events → Edit, enable this module and save the event to continue.</p><button class="btn" data-tab="events">Manage event modules →</button></div>`;if(tab==='overview')return `${heading('EVENT CONTROL ROOM / '+esc(TYPES[categoryOf(event)].label),'Run an experience for '+esc(event.name), 'One control centre with modules tailored to this event type.')}
+ <div class="grid-3" style="margin-bottom:22px">${stat(state.attendees,'Demo attendees','Illustrative/local count')}${stat(totalVotes(),'Current poll votes','Recorded in browser')}${stat(state.lightLaunchCount,'Light launches','Recorded in browser')}</div>
+ <div class="panel"><h2>Available modules for this event</h2><p class="descr">The attendee interface hides disabled features. Configure modules from All events → Edit.</p><div class="module-grid">${[['lights','✦','Light experience','Time-based colours and sequences'],['poll','◉','Live polling','Multiple choice or Yes / No'],['quiz','★','Quiz & trivia','Simple scoring and results'],['announcements','◈','Announcements','Non-emergency notices'],['sponsors','◆','Sponsor moment','Configurable demo campaigns'],['analytics','▥','Engagement insights','Per-event demo metrics']].filter(x=>enabledFor(event,x[0])).map(([k,i,t,d])=>`<button class="module" data-tab="${k}"><div class="module-icon">${i}</div><b>${t}</b><p>${d}</p><span>Open module →</span></button>`).join('')}</div></div><div class="panel"><div class="row"><button class="btn secondary" data-tab="report">View event report</button><button class="btn ghost" data-tab="events">Event details & QR</button></div></div>`;
+ if(tab==='lights')return `${heading('ENGAGE / LIGHTING','Light experience','Choose solid colour or one of two preloaded timed sequences. Real device synchronisation remains untested.')}${lightBanner()}<div class="panel"><h2>Set a crowd colour</h2><div class="color-list">${Object.entries(COLORS).map(([key,color])=>`<button title="${key}" aria-label="Select ${key}" class="swatch ${state.color===color?'selected':''}" data-color="${key}" style="background:${color}"></button>`).join('')}</div><div class="row"><button class="btn" data-action="activate-solid">Apply selected colour</button><button class="btn ghost" data-action="stop-light">Stop lighting</button></div></div><div class="panel"><h2>Preloaded timed sequences</h2><p class="descr">Sequences use a shared clock in browser tabs. The pilot must validate synchronisation on 10–30 physical devices.</p>${Object.entries(SEQUENCES).map(([key,seq])=>`<div class="scene-row"><div><strong>✦ ${esc(seq.name)}</strong><p>${seq.stages.map(t=>t.label).join(' → ')} · ${seq.duration}s</p></div><button class="btn" data-sequence="${key}">▶ Launch</button></div>`).join('')}<p class="tooltip">Opt-in and device compatibility are essential before any public light-show pilot.</p></div>`;
+ if(tab==='poll')return `${heading('ENGAGE / POLLING','Poll manager','Prepare a question queue, launch one at a time, and view per-event responses.')}
+ <div class="panel"><h2>Question library <span class="badge">${state.pollBank.length} prepared</span></h2><p class="descr">Three preset questions for this event type. Select any question to launch a new round.</p>${state.pollBank.map((p,i)=>`<div class="scene-row"><div><strong>${i+1}. ${esc(p.question)}</strong><p>${p.type==='yesno'?'Yes / No':'Multiple choice'} · ${p.options.length} answers</p></div><button class="btn secondary small-btn" data-run-question="${i}">Launch →</button></div>`).join('')}</div>
+ <div class="panel"><h2>Create another question</h2><div class="field"><label>Question type</label><select class="input" id="poll-type"><option value="choice">Multiple choice (3 options)</option><option value="yesno">Yes / No</option></select></div><div class="field"><label>Question</label><input id="poll-question" class="input" maxlength="125" placeholder="What would you like to ask?"></div><div id="poll-option-fields" class="option-editor">${['Option A','Option B','Option C'].map((l,i)=>`<div class="field"><label>${l}</label><input class="input" id="poll-option-${i}" placeholder="${l}" maxlength="56"></div>`).join('')}</div><button class="btn" data-action="add-poll-question">Add to question library</button></div>
+ <div class="panel"><h2>Current poll <span class="badge">${state.poll.open?'LIVE':'CLOSED'}</span></h2><h3>${esc(state.poll.question)}</h3>${pollBars()}<p class="small muted">${totalVotes()} demo votes · Poll round ${state.poll.version}</p><button class="btn ghost" data-action="close-poll">Close current poll</button></div>`;
 if(tab==='quiz')return `${heading('ENGAGEMENT / TRIVIA','Quiz & trivia','A simple live quiz with attendee feedback and demonstration scoring.')}<div class="panel"><div class="kicker">ROUND 01 / 03</div><h2 style="font-size:25px;margin-top:13px">${esc(state.quiz.question)}</h2>${state.quiz.options.map((o,i)=>`<div class="scene-row"><strong>${String.fromCharCode(65+i)}. ${esc(o)}</strong>${i===state.quiz.correct?'<span class="badge">Correct answer</span>':''}</div>`).join('')}<div class="row" style="margin-top:24px"><button class="btn" data-action="launch-quiz">Start trivia round →</button><button class="btn ghost" data-action="close-quiz">Close round</button></div><p class="tooltip">Participants can answer once per round in their browser session.</p></div>`;
 if(tab==='announcements')return `${heading('OPERATIONS / MESSAGING','Announcements','Compose and broadcast a short message to connected audience screens.')}<div class="panel"><h2>Event announcement</h2><div class="field"><label>Message body</label><textarea class="input" id="announcement-body">${esc(state.announcement)}</textarea></div><div class="row"><button class="btn" data-action="send-announcement">Send announcement →</button><button class="btn ghost" data-action="clear-announcement">Clear banner</button></div>${state.announcementSent?`<div class="notice green" style="margin-top:16px">✓ Message visible on attendee screens. Delivery is simulated in-browser.</div>`:''}</div>`;
-if(tab==='sponsors')return `${heading('COMMERCIAL / ACTIVATIONS','Sponsor moments','Launch a branded screen and connect an interactive offer to the event experience.')}<div class="panel"><div class="sponsor-panel" style="padding:48px 16px"><div class="kicker" style="color:#ffd4f3">PARTNER EXPERIENCE</div><b style="font-size:45px">NOVA AUDIO</b><span style="font-size:17px">BEYOND THE SOUND</span><p style="color:#fff">Your concert. Your moment.</p></div><div class="row"><button class="btn" data-action="launch-sponsor">Activate sponsor moment →</button><button class="btn ghost" data-action="close-sponsor">End sponsor moment</button></div><p class="tooltip">NOVA AUDIO is a fictional demo sponsor; no commercial inventory or brand contract is implied.</p></div>`;
-if(tab==='rewards')return `${heading('COMMERCIAL / REWARDS','QR rewards & offers','Give participants a simple sponsor reward after an engagement moment.')}<div class="panel"><div style="display:flex;gap:25px;align-items:center;flex-wrap:wrap"><div class="qr-mini" style="box-sizing:content-box">${qrMarkup(140)}</div><div><div class="kicker">NOVA AUDIO / DEMO</div><h2>10% off event merchandise</h2><p class="muted small">Preview QR is decorative and not redeemable.</p><button class="btn secondary" data-action="activate-offer">Publish demo offer</button></div></div></div>`;
-if(tab==='analytics')return `${heading('INSIGHTS / PILOT','Basic analytics','A preview of the event participation metrics available in the MVP.')}<div class="grid-3" style="margin-bottom:18px">${stat(state.attendees,'Connected users','Illustrative baseline')}${stat(totalVotes(),'Poll responses','Browser demo votes')}${stat(state.rewardCount,'Reward impressions','Illustrative baseline')}</div><div class="panel"><h2>Engagement over the event</h2><p class="descr">Representative chart, not measured usage telemetry.</p><div class="analytics-bars">${[18,26,39,57,45,72,66,86,73,99,80,110,103].map(v=>`<span style="height:${v}%"></span>`).join('')}</div><div class="mini-label">Event timeline →</div></div><div class="panel"><h2>Poll participation</h2>${pollBars()}</div>`;
-return `${heading('ROADMAP / PREVIEW','Future capabilities','These screens are intentionally conceptual and excluded from the pilot-ready MVP.')}<div class="futures">${[['Venue map & seat guidance','Find your zone, row and seat.'],['Zone-based messaging','Target specific sections of a venue.'],['Sponsor analytics report','Campaign performance and redemption insights.'],['Smart modular displays','Future hardware-connected experience.'],['Venue rewards','Loyalty and commercial offers across venues.'],['Safety & first aid','Requires authorised venue operations and separate validation.']].map(([a,b])=>`<div class="future"><span class="tag">FUTURE / PREVIEW</span><b style="margin-top:15px">${a}</b><p>${b}</p></div>`).join('')}</div>`;
+ if(tab==='sponsors')return `${heading('ACTIVATE / CAMPAIGN','Sponsor moments','Create a per-event sponsor takeover with a limited demo offer.')}
+ <div class="panel"><h2>Event sponsor campaign</h2><p class="descr">All partner information is illustrative, not a commercial agreement.</p><div class="field"><label>Partner name</label><input id="sponsor-name" class="input" maxlength="60" value="${esc(state.sponsor.name)}"></div><div class="field"><label>Campaign headline</label><input id="sponsor-headline" class="input" maxlength="90" value="${esc(state.sponsor.headline)}"></div><div class="field"><label>Offer description</label><input id="sponsor-offer" class="input" maxlength="100" value="${esc(state.sponsor.offer)}"></div><div class="event-form"><div class="field"><label>Redemption limit</label><input id="sponsor-limit" class="input" type="number" min="1" max="999" value="${state.sponsor.limit}"></div><div class="field"><label>Offer expiry (optional)</label><input id="sponsor-expiry" class="input" type="date" value="${esc(state.sponsor.expiry||'')}"></div></div><div class="row"><button class="btn secondary" data-action="save-sponsor">Save campaign</button><button class="btn" data-action="launch-sponsor">Activate sponsor moment →</button><button class="btn ghost" data-action="close-sponsor">End moment</button></div></div><div class="panel">${sponsorMobile()}<p class="small muted">Demo partner only · no payment or POS integration</p></div>`;
+ if(tab==='rewards')return `${heading('ACTIVATE / REWARDS','Offer redemption','Generate a demo claim code and validate it at the venue desk. No POS integration.')}
+ <div class="grid-3" style="margin-bottom:20px">${stat(state.claims.length,'Offer claims','Recorded in this browser')}${stat(state.claims.filter(c=>c.used).length,'Valid redemptions','Manually checked by staff')}${stat(state.sponsor.limit,'Maximum redemptions','Campaign-defined limit')}</div><div class="panel"><h2>Validate an attendee code</h2><div class="field"><label>Claim code</label><input class="input mono" id="redeem-code" placeholder="e.g. HM-AB1234" autocomplete="off"></div><button class="btn" data-action="redeem-offer">Validate & redeem</button><p class="descr" style="margin-top:12px">This is a simulated desk check. Codes are saved per event and cannot be redeemed twice.</p></div><div class="panel"><h2>Recent claims</h2>${state.claims.length?state.claims.slice(-10).reverse().map(c=>`<div class="scene-row"><strong class="mono">${esc(c.code)}</strong><span class="type-chip">${c.used?'Redeemed':'Unredeemed'}</span></div>`).join(''):'<div class="mini-empty">No claims yet. Open the attendee offer screen to create one.</div>'}</div>`;
+ if(tab==='analytics')return `${heading('INSIGHTS / PILOT','Basic analytics','Track interactions for the selected event. Values recorded locally are not real multi-device telemetry.')}
+ <div class="grid-3" style="margin-bottom:20px">${stat(state.attendees,'Demo attendees','Baseline may be illustrative')}${stat(totalVotes(),'Current poll responses','Locally recorded')}${stat(state.claims.filter(c=>c.used).length,'Offer redemptions','Verified in this demo')}</div><div class="panel"><h2>Active poll breakdown</h2>${pollBars()}</div><div class="panel"><h2>Interactions captured in this browser</h2><div class="report-metrics">${Object.entries({['Poll rounds']:state.pollLaunchCount,['Quiz answers']:state.quizResponses,['Light launches']:state.lightLaunchCount,['Announcements sent']:state.messagesSent,['Feedback forms']:state.feedback.length,['QR offers claimed']:state.claims.length}).map(([k,v])=>`<div><b>${v}</b><span>${k}</span></div>`).join('')}</div><p class="small muted">Latency, device failure rate and network resilience require actual multi-device testing.</p><button class="btn secondary" data-tab="report">View post-event report →</button></div>`;
+ if(tab==='report'){const r=selectedReport(event);return `${heading('REPORTING / POST EVENT','Event report', 'A per-event summary based on stored prototype actions, with explicit demo limitations.')}
+ <div class="panel"><h2>${esc(event.name)} · ${esc(event.code)}</h2><p class="descr">${esc(TYPES[categoryOf(event)].label)} · ${esc(event.venue)} · ${esc(event.date||'Date TBC')}</p><div class="report-metrics">${Object.entries({'Demo attendees':r.attendees,'Current poll votes':r.votes,'Quiz responses':r.answered,'Light launches':r.lightShows,'Announcements':r.announcements,'Offer claims':r.claims,'Redeemed offers':r.redeemed,'Feedback count':r.feedback,'Mean satisfaction':r.avgRating}).map(([k,v])=>`<div><b>${v}</b><span>${k}</span></div>`).join('')}</div><p class="small muted" style="margin-top:17px">Attendee figures can include a seeded illustrative baseline. All other actions here are local demo interactions. No customer conversion, network delay or cross-device KPIs are asserted.</p><div class="row"><button class="btn" data-action="export-event-report">Export CSV report</button><button class="btn ghost" data-tab="events">Return to events</button></div></div>`}
+ if(tab==='business')return `${heading('B2B / BUSINESS MODEL','Commercial model preview','Illustrative packaging only. Prices and sales assumptions require UK market validation.')}
+ <div class="futures">${[['Per-event licence','Single-event access and support; usage depends on the organiser'],['Organiser subscription','Repeated events under a shared organisation account'],['Sponsor activation','Optional limited campaigns and aggregate reporting']].map(([n,d])=>`<div class="future"><span class="tag">BUSINESS HYPOTHESIS</span><b>${n}</b><p>${d}</p></div>`).join('')}</div><div class="notice-warn" style="margin-top:18px">No payment processing, customer contracts, verified pricing or revenue have been implemented in this demo.</div>`;
+ return `${heading('ROADMAP / CONCEPT','Future platform modules','Concept previews only; these are outside the initial MVP.')}
+ <div class="futures">${[['GUIDE / Venue guidance','Zone and seat directions from verified venue data','Phase 2'],['COMMUNICATE / Zone messaging','Non-emergency local messages to authorised venue areas','Phase 2'],['AI DISCOVER & DINE','Find food using verified menus, budget and disclosed dietary information','Phase 3'],['Future sponsor reporting','Expanded campaign insights beyond basic pilot metrics','Later'],['Smart modular displays','Hardware-connected experiences after integration tests','Later']].map(([a,b,c])=>`<div class="future preview"><span class="tag">${c.toUpperCase()} / PREVIEW</span><b style="margin-top:15px">${a}</b><p>${b}</p>${a.includes('AI DISCOVER')?'<p class="small muted">Not a real AI recommendation. Allergy safety requires vendor-verified data.</p>':''}</div>`).join('')}</div><div class="notice-warn" style="margin-top:15px">Emergency evacuation and life-safety systems are out of scope. Harmoniq is not a replacement for authorised venue safety infrastructure.</div>`;
 }
 function totalVotes(){return state.poll.votes.reduce((a,b)=>a+b,0)}
 function pollBars(){let sum=totalVotes();return state.poll.options.map((name,i)=>{const pct=sum?Math.round(state.poll.votes[i]/sum*100):0;return `<div class="result-item"><div class="result-head"><strong>${esc(name)}</strong><strong>${pct}%</strong></div><div class="bar-bg"><div class="bar-fill" style="width:${pct}%"></div></div></div>`}).join('')}
-function sponsorMobile(){return `<div class="sponsor-panel"><div style="font-size:11px;color:#ffd4f3;letter-spacing:2px">OFFICIAL MOMENT</div><b>NOVA AUDIO</b><span>BEYOND THE SOUND</span><p style="color:#fff">Your concert. Your moment.</p></div><button class="btn phone-action" data-mobile="reward">Unlock event reward →</button>`}
-function phoneHtml(compact=true){if(!compact&&!joined){const preset=QS.get('event')||'NIGHT26';return `<div class="phone"><div class="phone-main"><div class="phone-header">HARMONIQ <span class="live-dot">●</span></div><div class="kicker">JOIN YOUR EVENT</div><h2>Find your moment.</h2><p>Each event has its own code, poll and lighting experience.</p><div class="field"><label>Enter event code</label><input class="input" id="event-code" placeholder="NIGHT26" value="${esc(preset)}" maxlength="16" /></div><button class="btn phone-action" data-action="join-event">Join event →</button><div class="event-lobby"><div class="eyebrow">OPEN EVENTS</div>${availableEventsForAudience()}</div></div></div>`;}
+function sponsorMobile(){return `<div class="sponsor-panel"><div style="font-size:11px;color:#ffd4f3;letter-spacing:2px">DEMO PARTNER MOMENT</div><b>${esc(state.sponsor.name)}</b><span>${esc(state.sponsor.headline)}</span><p style="color:#fff">${esc(state.sponsor.offer)}</p></div><button class="btn phone-action" data-mobile="reward">View limited offer →</button>`}
+function phoneHtml(compact=true){if(!compact&&!joined){const pre=QS.get('event');const preset=findEvent(pre)?.code||'NIGHT26';return `<div class="phone"><div class="phone-main"><div class="phone-header">HARMONIQ <span class="live-dot">●</span></div><div class="kicker">JOIN YOUR EVENT · UK PRE-MVP</div><h2>Find your moment.</h2><p>Join via event code or QR invite. No account needed for this concept demo.</p><div class="field"><label>Enter event code</label><input class="input" id="event-code" value="${esc(preset)}" maxlength="16" /></div><button class="btn phone-action" data-action="join-event">Join event →</button><div class="event-lobby"><div class="eyebrow">PUBLIC EVENTS</div>${availableEventsForAudience()}</div><p class="small muted">Private events are accessed using a code/link only. All stored activity stays in this browser.</p></div></div>`;}
 const back=`<button class="phone-back" data-mobile="home">← Back to event</button>`;let content='';let footer=true;
-if(audiencePage==='home'){content=`<div class="phone-header">HARMONIQ <span class="live-dot">● LIVE</span></div><div class="eyebrow">${esc(event.name.toUpperCase())} · ${esc(event.code)}</div><h2>You're part of the show.</h2><p>Welcome to your live experience.</p>${state.announcementSent?`<button class="phone-banner" data-mobile="announcement" style="text-align:left;width:100%;color:white;border:1px solid #5e447c">📣 ${esc(state.announcement)}</button>`:''}${state.sponsorActive?`<button class="phone-banner" data-mobile="sponsor" style="text-align:left;width:100%;color:white;border:1px solid #5e447c">★ Sponsor moment is live — view offer →</button>`:''}<div class="festival-card"><span>● LIVE NOW</span><b>${esc(event.name.toUpperCase())}</b><p>${state.attendees} attendees connected</p></div><div class="phone-tile-grid"><button class="phone-tile" data-mobile="lights">✦<b>Light show</b><span>Join the colours</span></button><button class="phone-tile" data-mobile="poll">◉<b>Live poll</b><span>Vote for a song</span></button><button class="phone-tile" data-mobile="quiz">★<b>Trivia</b><span>Play & score</span></button><button class="phone-tile" data-mobile="sponsor">◆<b>Rewards</b><span>Sponsor offers</span></button><button class="phone-tile" data-mobile="announcement">◈<b>Updates</b><span>Organiser messages</span></button><button class="phone-tile" data-mobile="map">↗<b>Venue map</b><span>Future preview</span></button></div><div class="event-mini-row" style="margin-top:13px"><span class="mini-label">CODE ${esc(event.code)}</span><button data-action="leave-event">↔ Switch event</button></div>`}
-if(audiencePage==='lights'){const l=currentLight();if(state.lightMode!=='idle'&&!l.done){footer=false;content=`<div class="light-full" style="background:${l.color}"><div class="light-brand">HARMONIQ · LIGHT EXPERIENCE</div><div style="text-align:center"><strong>${state.lightMode==='sequence'?'AURORA WAVE':'CROWD COLOUR'}</strong><p>${esc(l.label)}</p></div><button class="btn secondary" data-mobile="home">Exit light mode ×</button></div>`}else content=`${back}<div class="eyebrow">LIVE LIGHT EXPERIENCE</div><h2>Light up the crowd.</h2><p>Wait for the organiser to launch a sequence. Keep this screen open.</p><div class="lighting-stage" style="height:235px;margin-top:40px"><div><span>STANDBY</span><strong>READY</strong></div></div><div class="notice">Light effects are simulated. Timed sequences are included in the page and use a shared start timestamp.</div>`}
-if(audiencePage==='poll'){let already=sessionStorage.getItem('harmoniq-vote-'+event.id+'-'+state.poll.version)==='1';content=`${back}<div class="eyebrow">LIVE POLL ${state.poll.open?'● OPEN':'· PREVIEW'}</div><h2>${esc(state.poll.question)}</h2><p>Your voice shapes the show. Choose the next moment.</p>${already?`<div class="phone-result">✓ Vote submitted</div>${pollBars()}`:state.poll.open?state.poll.options.map((opt,i)=>`<button class="option" data-vote="${i}">${String.fromCharCode(65+i)} &nbsp; ${esc(opt)} →</button>`).join(''):'<div class="notice">Poll not started. Check back soon.</div>'}<div class="mini-label">${state.poll.open?'Votes appear in same-origin demo tabs for this event.':'Wait for the organiser to open this poll.'}</div>`}
-if(audiencePage==='quiz'){let selection=sessionStorage.getItem('harmoniq-quiz-'+event.id+'-'+state.quiz.version);content=`${back}<div class="eyebrow">TRIVIA / ROUND 01</div><h2>${esc(state.quiz.question)}</h2><p>Choose one answer. Win 100 demo points.</p>${selection!==null?`<div class="score">${Number(selection)===state.quiz.correct?'+100':'0'}</div><p style="text-align:center">${Number(selection)===state.quiz.correct?'Correct! Nice one.':'Great try. The correct answer is '+esc(state.quiz.options[state.quiz.correct])+'.'}</p>`:state.quiz.open?state.quiz.options.map((opt,i)=>`<button class="option" data-quiz="${i}">${String.fromCharCode(65+i)} &nbsp; ${esc(opt)} →</button>`).join(''):'<div class="notice">Quiz starts when the organiser launches this round.</div>'}`}
+ if(audiencePage==='home'){let tiles=[['lights','✦','Light show','Join the colours'],['poll','◉','Live poll','Make your choice'],['quiz','★','Trivia','Play & score'],['sponsor','◆','Sponsor','Explore the partner'],['announcement','◈','Updates','Organiser messages'],['reward','◇','Offers','Claim a reward'],['feedback','♡','Feedback','Rate the experience']];tiles=tiles.filter(x=>enabledFor(event,({sponsor:'sponsors',announcement:'announcements',reward:'rewards',feedback:'analytics'})[x[0]]||x[0]));content=`<div class="phone-header">HARMONIQ <span class="live-dot">● ACTIVE</span></div><div class="eyebrow">${esc(event.name.toUpperCase())} · ${esc(TYPES[categoryOf(event)].label)}</div><h2>Welcome to your event.</h2><p>Only the modules selected by your organiser appear here.</p>${state.announcementSent&&enabledFor(event,'announcements')?`<button class="phone-banner" data-mobile="announcement" style="text-align:left;width:100%;color:white;border:1px solid #5e447c">📣 ${esc(state.announcement)}</button>`:''}${state.sponsorActive&&enabledFor(event,'sponsors')?`<button class="phone-banner" data-mobile="sponsor" style="text-align:left;width:100%;color:white;border:1px solid #5e447c">★ A partner moment is live — explore →</button>`:''}<div class="festival-card"><span>● EVENT CONNECTED · DEMO</span><b>${esc(event.name.toUpperCase())}</b><p>${state.attendees} demo attendees · Code ${esc(event.code)}</p></div><div class="phone-tile-grid">${tiles.map(([key,i,name,sub])=>`<button class="phone-tile" data-mobile="${key}">${i}<b>${name}</b><span>${sub}</span></button>`).join('')}</div><div class="event-mini-row" style="margin-top:13px"><span class="mini-label">CODE ${esc(event.code)}</span><button data-action="leave-event">↔ Switch event</button></div>`}
+ if(audiencePage==='lights'){const l=currentLight();if(state.lightMode!=='idle'&&!l.done){footer=false;content=`<div class="light-full" style="background:${l.color}"><div class="light-brand">HARMONIQ · OPT-IN LIGHT</div><div style="text-align:center"><strong>${state.lightMode==='sequence'?esc(SEQUENCES[state.sequenceId]?.name||'Light Sequence'):'CROWD COLOUR'}</strong><p>${esc(l.label)}</p></div><button class="btn secondary" data-mobile="home">Exit light mode ×</button></div>`}else content=`${back}<div class="eyebrow">ENGAGE / LIGHT EXPERIENCE</div><h2>Light up the crowd.</h2><p>Choose to participate in the organiser's colour experience. Keep the screen open.</p><div class="lighting-stage" style="height:235px;margin-top:30px"><div><span>STANDBY</span><strong>READY</strong></div></div><div class="notice-warn">Opt-in visual effect demo. No flashing, emergency function or guaranteed multi-device sync is provided.</div>`}
+ if(audiencePage==='poll'){let already=sessionStorage.getItem('harmoniq-vote-'+event.id+'-'+state.poll.version)==='1';content=`${back}<div class="eyebrow">ENGAGE / LIVE POLL ${state.poll.open?'● OPEN':'· PREVIEW'}</div><h2>${esc(state.poll.question)}</h2><p>Choose one answer to take part in this event.</p>${already?`<div class="phone-result">✓ Vote submitted</div>${pollBars()}`:state.poll.open?state.poll.options.map((opt,i)=>`<button class="option" data-vote="${i}">${String.fromCharCode(65+i)} &nbsp; ${esc(opt)} →</button>`).join(''):'<div class="notice">The organiser has not launched this question yet.</div>'}<div class="mini-label">${state.poll.open?'Demo results are browser-local and not shared across independent devices.':'Wait for the organiser to launch a question.'}</div>`}
+ if(audiencePage==='quiz'){let selection=sessionStorage.getItem('harmoniq-quiz-'+event.id+'-'+state.quiz.version);content=`${back}<div class="eyebrow">ENGAGE / QUIZ</div><h2>${esc(state.quiz.question)}</h2><p>Choose one answer to earn 100 demonstration points.</p>${selection!==null?`<div class="score">${Number(selection)===state.quiz.correct?'+100':'0'}</div><p style="text-align:center">${Number(selection)===state.quiz.correct?'Correct! Nice one.':'Great try. Correct answer: '+esc(state.quiz.options[state.quiz.correct])+'.'}</p>`:state.quiz.open?state.quiz.options.map((opt,i)=>`<button class="option" data-quiz="${i}">${String.fromCharCode(65+i)} &nbsp; ${esc(opt)} →</button>`).join(''):'<div class="notice">Quiz starts when the organiser launches the round.</div>'}` }
 if(audiencePage==='announcement')content=`${back}<div class="eyebrow">OFFICIAL ANNOUNCEMENT</div><h2>Stay in the moment.</h2><div class="phone-banner" style="font-size:16px;margin-top:45px;padding:21px">${esc(state.announcementSent?state.announcement:'No active announcement yet. Check back soon.')}</div><p>Messages are controlled by the organiser.</p>`;
 if(audiencePage==='sponsor')content=`${back}<div class="eyebrow">SPONSOR EXPERIENCE</div><h2>A moment powered by a partner.</h2>${sponsorMobile()}`;
-if(audiencePage==='reward')content=`${back}<div class="eyebrow">SPONSOR REWARD</div><h2>You've unlocked an offer.</h2><div style="background:#f6f2ff;color:#2e2444;border-radius:22px;padding:17px;margin-top:24px;text-align:center"><strong>NOVA AUDIO</strong><div class="reward-qr">${qrMarkup(128)}</div><b>10% off event merchandise</b><p style="color:#665d73">DEMO QR · NOT REDEEMABLE</p></div><button class="btn phone-action" data-mobile="home">Return to event →</button>`;
+ if(audiencePage==='reward'){const my=state.claims.find(c=>c.session===sessionId),allowed=state.claims.filter(c=>c.used).length<state.sponsor.limit&&(!state.sponsor.expiry||state.sponsor.expiry>=new Date().toISOString().slice(0,10));content=`${back}<div class="eyebrow">ACTIVATE / OFFER</div><h2>Your event reward.</h2><div style="background:#f6f2ff;color:#2e2444;border-radius:22px;padding:17px;margin-top:19px;text-align:center"><strong>${esc(state.sponsor.name)}</strong><div class="reward-qr">${my?realQR('HARMONIQ DEMO '+event.code+' '+my.code,128):realQR(shareUrl(event),128)}</div><b>${esc(state.sponsor.offer)}</b><p style="color:#665d73">${my?'DEMO CLAIM: '+esc(my.code):'Demonstration offer · no payment or POS'}</p></div>${my?`<div class="notice ${my.used?'green':''}">${my.used?'✓ This code was validated at the demo desk.':'Show your claim code to the venue operator for demo validation.'}</div>`:allowed?'<button class="btn phone-action" data-action="claim-offer">Claim demo reward</button>':'<div class="notice-warn">This campaign has expired or reached its redemption limit.</div>'}<button class="btn secondary phone-action" data-mobile="home">Return to event →</button>`}
+ if(audiencePage==='feedback'){let prior=(state.feedback||[]).some(f=>f.session===sessionId);content=`${back}<div class="eyebrow">PILOT / FEEDBACK</div><h2>How was the experience?</h2><p>Your quick optional rating helps organisers understand the event. No name is requested.</p>${prior?'<div class="notice green">✓ Your feedback has been recorded in this browser.</div>':`<div class="feedback-row">${[1,2,3,4,5].map(i=>`<button aria-label="Rate ${i} out of 5" data-feedback="${i}">${i}★</button>`).join('')}</div>`}<p class="small muted">Demo ratings only; not a verified pilot survey.</p>`}
+ if(audiencePage==='food'){content=`${back}<div class="eyebrow">FUTURE / PHASE 3 ONLY</div><h2>AI Discover & Dine</h2><p>Concept only: explore food by budget and preferences using vendor-verified menu data.</p><div class="notice-warn">This preview does not make actual food recommendations or allergy-safety claims. It requires verified vendor data and separate validation.</div>`}
 if(audiencePage==='map')content=`${back}<div class="eyebrow">FUTURE CONCEPT</div><h2>Venue guidance.</h2><p>Zone-based maps and seat finding are planned for future versions.</p><div style="padding:30px;background:repeating-linear-gradient(45deg,#251e3b 0,#251e3b 27px,#302646 28px,#302646 30px);border:1px solid #574571;border-radius:20px;margin-top:35px;text-align:center;height:250px;display:grid;place-items:center"><div class="badge">ZONE A1 · PREVIEW ONLY</div></div>`;
-return `<div class="phone ${!footer?'full-light':''}"><div class="phone-main">${content}</div>${footer?`<div class="phone-footer">${[['home','Home'],['lights','Lights'],['poll','Poll'],['sponsor','Offers']].map(([k,name])=>`<button class="${audiencePage===k?'selected':''}" data-mobile="${k}">${name}</button>`).join('')}</div>`:''}</div>`}
+ const footerNav=[['home','Home'],['lights','Lights'],['poll','Poll'],['reward','Offers']].filter(([key])=>key==='home'||enabledFor(event,key==='reward'?'rewards':key));return `<div class="phone ${!footer?'full-light':''}"><div class="phone-main">${content}</div>${footer?`<div class="phone-footer">${footerNav.map(([k,name])=>`<button class="${audiencePage===k?'selected':''}" data-mobile="${k}">${name}</button>`).join('')}</div>`:''}</div>`}
 function studio(){return `<div class="debug-banner">INTERACTIVE CONCEPT DEMO · BROWSER SIMULATION · NOT PRODUCTION SOFTWARE</div><div class="shell">${sidebar()}<main class="main">${topbar()}<div class="layout"><section class="workspace">${organizerContent()}</section><aside class="preview-column"><div class="preview-cap"><div><div class="kicker">LIVE AUDIENCE PREVIEW</div><p class="small muted" style="margin:8px 0 0">Phone screen mirrored in-browser</p></div><button class="btn ghost small-btn" data-action="open-audience">↗</button></div>${phoneHtml()}</aside></div></main></div>`}
 function attendee(){return `<div class="debug-banner">HARMONIQ ATTENDEE DEMO · MULTI-EVENT ACCESS</div><div style="min-height:100vh;display:grid;place-items:center;padding:30px;background:radial-gradient(circle at 50% 10%,#34224f,#0b0919 65%)"><div style="position:fixed;top:25px;left:30px"><button class="btn ghost small-btn" data-action="open-hub">← Explore product</button></div>${phoneHtml(false)}</div>`}
-function display(){const l=currentLight();let body='';if(stageMode==='poll'&&state.poll.open){body=`<h1>${esc(state.poll.question)}</h1><div class="display-poll">${pollBars()}</div><p>${totalVotes()} votes for ${esc(event.name)} · Demo mode</p>`}else if(state.sponsorActive){body=`<div class="display-sponsor"><div class="kicker" style="color:#ffd9f4">SPONSOR MOMENT</div><h1>NOVA AUDIO</h1><h2 class="sub">BEYOND THE SOUND</h2><p style="color:white">Your concert. Your moment.</p></div>`}else if(state.lightMode!=='idle'&&!l.done){body=`<div class="display-light" style="background:${l.color}"><strong>AURORA WAVE</strong></div><p>Everyone, light up the room.</p>`}else if(state.poll.open||stageMode==='poll'){body=`<h1>${esc(state.poll.question)}</h1><div class="display-poll">${pollBars()}</div><p>${totalVotes()} votes in demo mode · Vote with your phone</p>`}else if(state.announcementSent){body=`<h1>MESSAGE FROM THE ORGANISER</h1><p style="color:white;font-size:38px;max-width:980px">${esc(state.announcement)}</p>`}else{body=`<div class="kicker">WELCOME TO THE SHOW</div><h1>YOU ARE<br/>THE SHOW.</h1><p>Join this event on your phone using code <strong style="color:white">${esc(event.code)}</strong></p><div style="display:flex;gap:16px;margin-top:38px;align-items:center"><div style="background:white;padding:10px;border-radius:12px">${qrMarkup(120)}</div><p>Scan-style graphic for presentation only.<br/>Use the event code to enter the demo.</p></div>`}return `<div class="display-screen"><div class="display-header"><div class="brand"><span class="logo-mark">✦</span>HARMONIQ <span class="kicker" style="font-size:12px;margin-left:10px">LIVE DISPLAY · ${esc(event.name.toUpperCase())}</span></div><div class="actions"><label class="event-switch-label">EVENT <select id="display-event-switch" class="event-switch">${eventOptions(displayEventId)}</select></label><span class="pill live">● ${state.attendees} demo viewers</span><button class="btn ghost small-btn" data-action="set-display-poll">Poll results</button><button class="btn secondary small-btn" data-action="open-hub">Explore</button><button class="btn ghost small-btn" data-action="fullscreen">⛶</button></div></div><div class="display-stage">${body}</div><p style="position:fixed;bottom:17px;right:24px;font-size:11px;color:#716984">HARMONIQ CONCEPT / PRESENTATION MODE</p></div>`}
-function hub(){return `<div class="landing"><div class="brand"><span class="logo-mark">✦</span>HARMONIQ</div><div class="kicker" style="margin-top:16px">INTERACTIVE PRODUCT PROTOTYPE · UK PILOT CONCEPT</div><h1>Make the crowd<br/><i>part of the show.</i></h1><p class="landing-sub">One connected experience across an organiser control room, attendee phones and a live venue display.</p><div class="landing-grid">${[['01','Attendee experience','Join an event, light up the phone, take part in a poll and unlock a reward.','attendee'],['02','Organiser control room','Run interactive moments, control crowd lights and explore basic analytics.','studio'],['03','Live venue display','Show an audience-driven moment on the big screen.','display']].map(([n,title,sub,v])=>`<button class="landing-card" data-view="${v}"><div class="kicker">${n} / EXPLORE</div><b>${title}</b><p>${sub}</p><em>Open experience →</em></button>`).join('')}</div><div class="notice" style="max-width:930px">Concept demonstration only. Browser controls simulate real-time interactions; no cloud backend, authentication, real event service or production sync is provided.</div></div>`}
+function display(){const l=currentLight();let body='';if(state.sponsorActive&&enabledFor(event,'sponsors')){body=`<div class="display-sponsor"><div class="kicker" style="color:#ffd9f4">DEMO SPONSOR MOMENT</div><h1>${esc(state.sponsor.name)}</h1><h2 class="sub">${esc(state.sponsor.headline)}</h2><p style="color:white">${esc(state.sponsor.offer)}</p></div>`}else if(state.lightMode!=='idle'&&!l.done&&enabledFor(event,'lights')){body=`<div class="display-light" style="background:${l.color}"><strong>${esc(state.lightMode==='solid'?'CROWD COLOUR':SEQUENCES[state.sequenceId]?.name||'Timed scene')}</strong></div><p>Optional shared light moment · Demonstration</p>`}else if((stageMode==='poll'||state.poll.open)&&enabledFor(event,'poll')){body=`<h1>${esc(state.poll.question)}</h1><div class="display-poll">${pollBars()}</div><p>${totalVotes()} browser-demo votes for ${esc(event.name)}</p>`}else if(stageMode==='quiz'&&enabledFor(event,'quiz')){body=`<div class="kicker">LIVE TRIVIA</div><h1>${esc(state.quiz.question)}</h1><p>Answer on your phone · ${state.quizResponses} demo responses</p>`}else if(state.announcementSent&&enabledFor(event,'announcements')){body=`<h1>MESSAGE FROM THE ORGANISER</h1><p style="color:white;font-size:38px;max-width:980px">${esc(state.announcement)}</p>`}else{body=`<div class="kicker">WELCOME / ${esc(TYPES[categoryOf(event)].label)}</div><h1>YOUR EVENT.<br/>YOUR MOMENT.</h1><p>Join using code <strong style="color:white">${esc(event.code)}</strong></p><div style="display:flex;gap:16px;margin-top:38px;align-items:center"><div class="qr-real">${realQR(shareUrl(event),133)}</div><div><p>Scan this QR with your phone to open the attendee page.</p><p class="small muted">Devices have independent browser data; this does not provide live cross-device control.</p></div></div>`}return `<div class="display-screen"><div class="display-header"><div class="brand"><span class="logo-mark">✦</span>HARMONIQ <span class="kicker" style="font-size:12px;margin-left:10px">LIVE DISPLAY · ${esc(event.name.toUpperCase())}</span></div><div class="actions"><label class="event-switch-label">EVENT <select id="display-event-switch" class="event-switch">${eventOptions(displayEventId)}</select></label><span class="pill live">DEMO · ${state.attendees} shown</span><button class="btn ghost small-btn" data-action="set-display-poll">Poll</button><button class="btn ghost small-btn" data-action="set-display-quiz">Quiz</button><button class="btn secondary small-btn" data-action="open-hub">Explore</button><button class="btn ghost small-btn" data-action="fullscreen">⛶</button></div></div><div class="display-stage">${body}</div><p style="position:fixed;bottom:17px;right:24px;font-size:11px;color:#716984">HARMONIQ · CONCEPT, NOT LIVE EVENT SOFTWARE</p></div>`}
+function hub(){return `<div class="landing"><div class="brand"><span class="logo-mark">✦</span>HARMONIQ</div><div class="kicker" style="margin-top:16px">MODULAR EVENT EXPERIENCE · UK B2B PRE-MVP · OCTOBER 2026</div><h1>One platform.<br/><i>Many moments.</i></h1><p class="landing-sub">Create an event, enable the right modules, invite attendees by QR, run live participation and review engagement — all in a connected concept demo.</p><div class="landing-grid">${[['01','Organiser workspace','Create a conference, university activity, pub quiz or concert. Configure modules and share a QR.','studio'],['02','Attendee experience','Join one of several events and access only its active experiences.','attendee'],['03','Live venue display','Present polls, messages, sponsor moments and timed colour scenes.','display']].map(([n,title,sub,v])=>`<button class="landing-card" data-view="${v}"><div class="kicker">${n} / EXPLORE</div><b>${title}</b><p>${sub}</p><em>Open experience →</em></button>`).join('')}</div><div class="notice" style="max-width:930px">CONCEPT PROTOTYPE · Browser-local simulation, not a networked pilot. The 10–30 device synchronisation target and 30–100 participant pilot require a backend, permission controls and device testing.</div></div>`}
 function draw(){refreshActive();const a=document.getElementById('app');a.innerHTML=view==='studio'?studio():view==='attendee'?attendee():view==='display'?display():hub();document.title='Harmoniq — '+({studio:'Organiser Control Room',attendee:'Attendee Experience',display:'Live Display',hub:'Product Demo'})[view]}
 function nav(v){view=v;if(v==='attendee')joined=Boolean(attendeeEventId&&sessionStorage.getItem('hm-joined-current')===attendeeEventId);draw();try{history.replaceState(null,'',location.pathname+'?view='+encodeURIComponent(v))}catch(e){}window.scrollTo(0,0)}
 function enterMobile(s){audiencePage=s;draw()}
 function openView(v){window.open(location.pathname+'?view='+v+'&event='+encodeURIComponent(event.code),'_blank','noopener,noreferrer')}
+function downloadContent(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1500)}
 function handleAction(action){switch(action){
 case'open-hub':nav('hub');break;
 case'open-audience':openView('attendee');break;
@@ -136,46 +1452,62 @@ case'save-event':{
  const venue=document.getElementById('manage-event-venue')?.value.trim()||'';
  const date=document.getElementById('manage-event-date')?.value||'';
  const status=document.getElementById('manage-event-status')?.value||'live';
+ const category=document.getElementById('manage-event-category')?.value||'concert';
+ const visibility=document.getElementById('manage-event-visibility')?.value||'public';
+ const modules=[...document.querySelectorAll('[data-event-module]:checked')].map(n=>n.dataset.eventModule);
+ if(!modules.length){toast('Enable at least one module for this event.');return}
  if(!name||name.length<3){toast('Enter an event name of at least 3 characters.');return}
  if(!/^[A-Z0-9-]{4,16}$/.test(code||'')){toast('Use a code of 4–16 letters, numbers or hyphens.');return}
  if(db.events.some(e=>e.code===code&&e.id!==editingEventId)){toast('This event code already exists.');return}
  const nextId=editingEventId||'evt-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,7);
- updateDatabase(d=>{const item=d.events.find(e=>e.id===nextId);if(item){Object.assign(item,{name,code,venue,date,status});item.state.eventName=name.toUpperCase();}else{d.events.push({id:nextId,code,name,venue,date,status,category:'Event',state:newEventState(name)})}});
+ updateDatabase(d=>{const item=d.events.find(e=>e.id===nextId);if(item){const old=categoryOf(item);Object.assign(item,{name,code,venue,date,status,category,visibility,modules});item.state.eventName=name.toUpperCase();if(old!==category){item.state.pollBank=defaultBank(category);item.state.poll=Object.assign(item.state.poll,{...item.state.pollBank[0],votes:new Array(item.state.pollBank[0].options.length).fill(0),open:false})}}else{const ne=makeSeedEvent(nextId,code,name,venue,date,category,status);ne.visibility=visibility;ne.modules=modules;d.events.push(ne)}});
  editingEventId=null;selectOrganiser(nextId);tab='events';draw();toast('Event saved: '+name);break;}
 case'activate-solid':update(s=>{s.lightMode='solid';s.lightStarted=0});toast('Crowd colour activated for '+event.name);break;
-case'start-sequence':update(s=>{s.lightMode='sequence';s.lightStarted=Date.now()+900;s.lightLaunchCount++});toast('Aurora Wave scheduled for '+event.name);break;
+case'start-sequence':update(s=>{s.lightMode='sequence';s.sequenceId='aurora';s.lightStarted=Date.now()+900;s.lightLaunchCount++});toast('Aurora Wave scheduled for '+event.name);break;
 case'stop-light':update(s=>{s.lightMode='idle';s.lightStarted=0});toast('Light show stopped');break;
 case'save-poll':{const q=document.getElementById('poll-question')?.value.trim();const opts=[0,1,2].map(i=>document.getElementById('poll-option-'+i)?.value.trim());if(!q||opts.some(a=>!a)){toast('Question and all three options are required.');return;}update(s=>{s.poll.question=q;s.poll.options=opts});toast('Poll question saved for '+event.name);break}
-case'launch-poll':{const q=document.getElementById('poll-question')?.value.trim()||state.poll.question,opts=[0,1,2].map(i=>document.getElementById('poll-option-'+i)?.value.trim()||state.poll.options[i]);update(s=>{s.poll={question:q,options:opts,votes:[0,0,0],open:true,version:s.poll.version+1};s.sponsorActive=false});stageMode='poll';toast('Live poll launched for '+event.name);break}
+case'launch-poll':{const q=document.getElementById('poll-question')?.value.trim()||state.poll.question,opts=[0,1,2].map(i=>document.getElementById('poll-option-'+i)?.value.trim()||state.poll.options[i]);update(s=>{s.poll={type:'choice',question:q,options:opts,votes:new Array(opts.length).fill(0),open:true,version:s.poll.version+1};s.pollLaunchCount++;s.sponsorActive=false});stageMode='poll';toast('Live poll launched for '+event.name);break}
 case'close-poll':update(s=>{s.poll.open=false});toast('Poll closed');break;
-case'launch-quiz':update(s=>{s.quiz.open=true;s.quiz.version++});toast('Trivia round is live');break;
+case'launch-quiz':if(!enabledFor(event,'quiz'))return;update(s=>{s.quiz.open=true;s.quiz.version++});toast('Trivia round is live');break;
 case'close-quiz':update(s=>{s.quiz.open=false});toast('Trivia round closed');break;
-case'send-announcement':{const message=document.getElementById('announcement-body')?.value.trim();if(!message){toast('Please write an announcement.');return;}update(s=>{s.announcement=message;s.announcementSent=true});toast('Announcement sent for '+event.name);break}
+case'send-announcement':{const message=document.getElementById('announcement-body')?.value.trim();if(!message){toast('Please write an announcement.');return;}update(s=>{s.announcement=message;s.announcementSent=true;s.messagesSent++});toast('Announcement sent for '+event.name);break}
 case'clear-announcement':update(s=>s.announcementSent=false);toast('Announcement cleared');break;
 case'launch-sponsor':update(s=>s.sponsorActive=true);toast('Sponsor moment active');break;
 case'close-sponsor':update(s=>s.sponsorActive=false);toast('Sponsor moment ended');break;
 case'activate-offer':update(s=>s.sponsorActive=true);toast('Demo reward published');break;
 case'set-display-poll':stageMode='poll';draw();break;
+
+case'copy-event-link':{navigator.clipboard?.writeText(shareUrl(event)).then(()=>toast('Invite link copied')).catch(()=>toast('Copy this event URL from the Invite attendees panel.'));break}
+case'save-event-qr':{const svg=realQR(shareUrl(event));const blob=new Blob([svg],{type:'image/svg+xml'});downloadContent(blob,'harmoniq-'+event.code+'-QR.svg');toast('Scannable event QR saved');break}
+case'add-poll-question':{const type=document.getElementById('poll-type')?.value||'choice',question=document.getElementById('poll-question')?.value.trim(),options=type==='yesno'?['Yes','No']:[0,1,2].map(i=>document.getElementById('poll-option-'+i)?.value.trim());if(!question||options.some(x=>!x)){toast('Enter a question and all its answer choices.');return}update(s=>{s.pollBank.push({type,question,options})});toast('Question saved for this event');break}
+case'save-sponsor':{const name=document.getElementById('sponsor-name')?.value.trim(),headline=document.getElementById('sponsor-headline')?.value.trim(),offer=document.getElementById('sponsor-offer')?.value.trim(),expiry=document.getElementById('sponsor-expiry')?.value||'',limit=Number(document.getElementById('sponsor-limit')?.value||0);if(!name||!headline||!offer||limit<1||limit>999){toast('Complete all sponsor fields and set a valid limit.');return}update(s=>{s.sponsor={name,headline,offer,expiry,limit}});toast('Sponsor campaign saved');break}
+case'claim-offer':{if(!enabledFor(event,'rewards'))return;let entry=state.claims.find(c=>c.session===sessionId);if(entry){toast('Offer already claimed');return}if(state.sponsor.expiry&&state.sponsor.expiry<new Date().toISOString().slice(0,10)){toast('Offer expired');return}if(state.claims.filter(c=>c.used).length>=state.sponsor.limit){toast('Offer redemption limit reached');return}const code='HM-'+Math.random().toString(36).slice(2,8).toUpperCase();update(s=>{s.claims.push({code,session:sessionId,used:false,date:Date.now()})});toast('Demo claim generated: '+code);break}
+case'redeem-offer':{const code=document.getElementById('redeem-code')?.value.trim().toUpperCase();const claim=state.claims.find(c=>c.code===code);if(!claim){toast('Claim not found for this event');return}if(claim.used){toast('Already redeemed');return}if(state.sponsor.expiry&&state.sponsor.expiry<new Date().toISOString().slice(0,10)){toast('Offer expired');return}if(state.claims.filter(c=>c.used).length>=state.sponsor.limit){toast('Redemption limit reached');return}update(s=>{const c=s.claims.find(x=>x.code===code);if(c)c.used=true});toast('Demo claim validated');break}
+case'export-event-report':{const r=selectedReport(event);let rows=[['Harmoniq prototype report','Value'],['Event',event.name],['Event code',event.code],['Type',TYPES[categoryOf(event)].label],['Note','Browser-local demo; attendee baseline may be illustrative'],...Object.entries(r)];const csv=rows.map(a=>a.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\r\n');downloadContent(new Blob([csv],{type:'text/csv;charset=utf-8'}),'harmoniq-'+event.code+'-report.csv');toast('Demo report downloaded');break}
+case'set-display-quiz':stageMode='quiz';draw();break;
 case'fullscreen':{const e=document.documentElement;if(!document.fullscreenElement){e.requestFullscreen?.()}else{document.exitFullscreen?.()}break}
 case'reset-demo':{update(s=>Object.assign(s,newEventState(event.name,event.id==='evt-midnight')));toast('Selected event reset: '+event.name);break;}
 }}
 window.addEventListener('click',e=>{
-const a=e.target.closest('[data-action],[data-tab],[data-mobile],[data-vote],[data-quiz],[data-color],[data-view],[data-join-code],[data-select-event],[data-edit-event],[data-toggle-event]');if(!a)return;
+const a=e.target.closest('[data-action],[data-tab],[data-mobile],[data-vote],[data-quiz],[data-color],[data-view],[data-join-code],[data-select-event],[data-edit-event],[data-toggle-event],[data-run-question],[data-sequence],[data-feedback]');if(!a)return;
 if(a.dataset.action){handleAction(a.dataset.action);return}
+if(a.dataset.runQuestion!==undefined){const i=Number(a.dataset.runQuestion);update(s=>{const q=s.pollBank[i];if(!q)return;s.poll={...clone(q),votes:new Array(q.options.length).fill(0),open:true,version:s.poll.version+1};s.pollIndex=i;s.pollLaunchCount++;s.sponsorActive=false});stageMode='poll';toast('Question '+(i+1)+' now live');return}
+if(a.dataset.sequence){const k=a.dataset.sequence;if(!enabledFor(event,'lights')||!SEQUENCES[k])return;update(s=>{s.lightMode='sequence';s.sequenceId=k;s.lightStarted=Date.now()+600;s.lightLaunchCount++});toast(SEQUENCES[k].name+' started');return}
+if(a.dataset.feedback){if(!enabledFor(event,'analytics'))return;const value=Number(a.dataset.feedback);if(!(value>=1&&value<=5))return;if(state.feedback.some(x=>x.session===sessionId))return;update(s=>s.feedback.push({session:sessionId,rating:value,date:Date.now()}));toast('Thanks for your demo feedback');return}
 if(a.dataset.joinCode){joinEventByCode(a.dataset.joinCode);return}
 if(a.dataset.selectEvent){selectOrganiser(a.dataset.selectEvent);tab='overview';draw();return}
 if(a.dataset.editEvent){editingEventId=a.dataset.editEvent;tab='events';draw();setTimeout(()=>document.getElementById('manage-event-name')?.focus(),50);return}
 if(a.dataset.toggleEvent){const id=a.dataset.toggleEvent;updateDatabase(d=>{const e=d.events.find(e=>e.id===id);if(e)e.status=e.status==='live'?'draft':'live';});toast('Event entry status changed');return}
 if(a.dataset.tab){tab=a.dataset.tab;draw();return}
-if(a.dataset.mobile){enterMobile(a.dataset.mobile);return}
+if(a.dataset.mobile){const k=({sponsor:'sponsors',reward:'rewards',announcement:'announcements',feedback:'analytics'})[a.dataset.mobile]||a.dataset.mobile;if(MODULES[k]&&!enabledFor(event,k)){toast('This experience is disabled for this event');return}enterMobile(a.dataset.mobile);return}
 if(a.dataset.view){nav(a.dataset.view);return}
 if(a.dataset.color){update(s=>s.color=COLORS[a.dataset.color]);return}
-if(a.dataset.vote){if(!joined&&view==='attendee'){toast('Join an event before voting.');return;}if(!state.poll.open){toast('Poll is not open yet.');return;}const token='harmoniq-vote-'+event.id+'-'+state.poll.version;if(sessionStorage.getItem(token)==='1'){toast('You already voted in this round.');return;}let i=Number(a.dataset.vote);sessionStorage.setItem(token,'1');update(s=>s.poll.votes[i]++);toast('Vote recorded for '+event.name);return}
-if(a.dataset.quiz){if(!joined&&view==='attendee'){toast('Join an event before playing.');return;}if(!state.quiz.open){toast('The quiz has not started yet.');return;}const token='harmoniq-quiz-'+event.id+'-'+state.quiz.version;if(sessionStorage.getItem(token)!=null)return;sessionStorage.setItem(token,a.dataset.quiz);draw();toast(Number(a.dataset.quiz)===state.quiz.correct?'Correct answer! +100 demo points':'Thanks for taking part!');return}
+if(a.dataset.vote){if(!enabledFor(event,'poll'))return;if(!joined&&view==='attendee'){toast('Join an event before voting.');return;}if(!state.poll.open){toast('Poll is not open yet.');return;}const token='harmoniq-vote-'+event.id+'-'+state.poll.version;if(sessionStorage.getItem(token)==='1'){toast('You already voted in this round.');return;}let i=Number(a.dataset.vote);sessionStorage.setItem(token,'1');update(s=>s.poll.votes[i]++);toast('Vote recorded for '+event.name);return}
+if(a.dataset.quiz){if(!enabledFor(event,'quiz'))return;if(!joined&&view==='attendee'){toast('Join an event before playing.');return;}if(!state.quiz.open){toast('The quiz has not started yet.');return;}const token='harmoniq-quiz-'+event.id+'-'+state.quiz.version;if(sessionStorage.getItem(token)!=null)return;sessionStorage.setItem(token,a.dataset.quiz);update(s=>s.quizResponses++);draw();toast(Number(a.dataset.quiz)===state.quiz.correct?'Correct answer! +100 demo points':'Thanks for taking part!');return}
 });
-window.addEventListener('change',e=>{if(e.target.id==='organiser-event-switch'){selectOrganiser(e.target.value);return}if(e.target.id==='display-event-switch'){selectDisplay(e.target.value);return}});
+window.addEventListener('change',e=>{if(e.target.id==='organiser-event-switch'){selectOrganiser(e.target.value);return}if(e.target.id==='display-event-switch'){selectDisplay(e.target.value);return}if(e.target.id==='manage-event-category'){const c=TYPES[e.target.value]||TYPES.concert;document.querySelectorAll('[data-event-module]').forEach(x=>x.checked=c.modules.includes(x.dataset.eventModule));return}if(e.target.id==='poll-type'){const isYes=e.target.value==='yesno';document.getElementById('poll-option-fields').style.display=isYes?'none':'';return}});
 
-setInterval(()=>{if(state.lightMode==='sequence'){if(currentLight().done){update(s=>{if(s.lightMode==='sequence'&&(Date.now()-s.lightStarted)>=16000){s.lightMode='idle';s.lightStarted=0}})}else if(view==='display'||(view==='attendee'&&audiencePage==='lights')||(view==='studio'&&(tab==='lights'||audiencePage==='lights')))draw()}},900);
+setInterval(()=>{if(state.lightMode==='sequence'){if(currentLight().done){update(s=>{if(s.lightMode==='sequence'&&(Date.now()-s.lightStarted)>=(SEQUENCES[s.sequenceId]?.duration||16)*1000){s.lightMode='idle';s.lightStarted=0}})}else if(view==='display'||(view==='attendee'&&audiencePage==='lights')||(view==='studio'&&(tab==='lights'||audiencePage==='lights')))draw()}},900);
 draw();
 })();
 </script>
