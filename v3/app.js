@@ -429,6 +429,86 @@ if(a.dataset.quiz){if(!enabledFor(event,'quiz'))return;if(!joined&&view==='atten
 });
 window.addEventListener('change',e=>{if(e.target.id==='organiser-event-switch'){selectOrganiser(e.target.value);return}if(e.target.id==='display-event-switch'){selectDisplay(e.target.value);return}if(e.target.id==='manage-event-category'){const c=TYPES[e.target.value]||TYPES.concert;document.querySelectorAll('[data-event-module]').forEach(x=>x.checked=c.modules.includes(x.dataset.eventModule));return}if(e.target.id==='poll-type'){const isYes=e.target.value==='yesno';document.getElementById('poll-option-fields').style.display=isYes?'none':'';return}});
 
+
+// V4: one announcements module handles both entire-event and seating-zone messages.
+const v3UpgradeEvent = upgradeEvent;
+upgradeEvent = function(e){
+ v3UpgradeEvent(e);
+ const s=e.state;
+ if(!e.extensionsV4){
+  if(e.modules.includes('messaging')&&!e.modules.includes('announcements'))e.modules.push('announcements');
+  const prior=(s.zoneMessages||[]).map(m=>({id:m.id,zone:m.zone||'all',text:m.text,date:m.date||Date.now(),active:true}));
+  if(s.announcementSent&&s.announcement)prior.push({id:'prior-all-'+(s.updated||Date.now()),zone:'all',text:s.announcement,date:s.updated||Date.now(),active:true});
+  s.messages=[...(Array.isArray(s.messages)?s.messages:[]),...prior].sort((a,b)=>(a.date||0)-(b.date||0));
+  e.extensionsV4=true;
+ }
+ if(!Array.isArray(s.messages))s.messages=[];
+ e.modules=e.modules.filter(k=>k!=='messaging');
+};
+delete MODULES.messaging;
+for(const t of Object.values(TYPES))t.modules=t.modules.filter(k=>k!=='messaging');
+db.events.forEach(upgradeEvent);
+refreshActive();
+function v4VisibleMessages(){const seat=guestSeat();return (state.messages||[]).filter(m=>m.zone==='all'||(seat&&seat.confirmed&&m.zone===seat.zone))}
+function v4LatestMessage(){return v4VisibleMessages().filter(m=>m.active!==false).at(-1)||null}
+function unifiedAnnouncementPanel(){
+ const messages=state.messages||[];
+ return `${heading('COMMUNICATE / ANNOUNCEMENTS','Announcements','Send a non-emergency message to all event attendees or one checked-in seating zone.')}
+ <div class="panel"><h2>New announcement</h2>
+ <div class="field"><label>Recipients</label><select class="input" id="announcement-target">${zoneOption()}</select>
+ <p class="small muted">All zones reaches everyone in this event. Targeted zones require a confirmed seat. No GPS tracking.</p></div>
+ <div class="field"><label>Message</label><textarea class="input" maxlength="260" id="announcement-body" placeholder="Write an announcement for your selected audience..."></textarea></div>
+ <div class="row"><button class="btn" data-action="send-announcement">Send announcement →</button><button class="btn ghost" data-action="clear-announcement">Clear active banners</button></div>
+ <p class="small muted">Browser demo only; no cross-device delivery or push notifications.</p></div>
+ <div class="panel"><h2>Announcement history · ${messages.length}</h2>
+ ${messages.length?messages.slice().reverse().map(m=>`<div class="scene-row"><div><span class="microtag">${esc(m.zone==='all'?'ALL ATTENDEES':'ZONE '+m.zone)}</span><span class="small muted" style="margin-left:9px">${esc(new Date(m.date).toLocaleString('en-GB'))}</span><p>${esc(m.text)}</p></div><span class="small muted">${m.active===false?'Archived':'Active'}</span></div>`).join(''):'<p class="small muted">No announcements sent yet.</p>'}</div>`;
+}
+const v3Sidebar=sidebar;
+sidebar=function(){return v3Sidebar().replace(/<button class="nav-btn[^>]*data-tab="messaging"[^>]*>[\s\S]*?<\/button>/,'')};
+const v3OrganizerContent=organizerContent;
+organizerContent=function(){if(tab==='announcements'||tab==='messaging')return unifiedAnnouncementPanel();return v3OrganizerContent()};
+const v3PhoneHtml=phoneHtml;
+phoneHtml=function(compact=true){
+ let html=v3PhoneHtml(compact);
+ if(audiencePage==='home'){
+  html=html.replace(/<button class="phone-banner" data-mobile="announcement"[^>]*>[\s\S]*?<\/button>/g,'');
+  const m=v4LatestMessage();
+  if(m&&enabledFor(event,'announcements')){
+   const banner=`<button class="phone-banner" data-mobile="announcement" style="width:100%;text-align:left;color:white;border:1px solid #986bd6">Announcement (${esc(m.zone==='all'?'All attendees':'Zone '+m.zone)}): ${esc(m.text)}</button>`;
+   html=html.replace('<h2>Welcome to your event.</h2>','<h2>Welcome to your event.</h2>'+banner);
+  }
+ }
+ if(audiencePage==='announcement'&&enabledFor(event,'announcements')){
+  const start=html.indexOf('<div class="eyebrow">OFFICIAL ANNOUNCEMENT</div>');
+  const endMarker='<p>Messages are controlled by the organiser.</p>';
+  const end=html.indexOf(endMarker,start);
+  if(start>=0&&end>=0){
+   const all=v4VisibleMessages();
+   const inbox=`<div class="eyebrow">OFFICIAL UPDATES</div><h2>Announcements</h2><p>Updates for everyone and your confirmed seating zone.</p>${all.length?all.slice().reverse().map(m=>`<div class="phone-banner" style="font-size:14px;margin-top:15px;padding:17px"><b>${esc(m.zone==='all'?'All attendees':'Zone '+m.zone)}</b><p class="small muted">${esc(new Date(m.date).toLocaleString('en-GB'))}</p><p style="color:inherit;margin-bottom:0">${esc(m.text)}</p></div>`).join(''):'<div class="notice" style="margin-top:22px">No announcements for this event or your zone yet.</div>'}<p class="small muted">Demo messages are not emergency alerts.</p>`;
+   html=html.slice(0,start)+inbox+html.slice(end+endMarker.length);
+  }
+ }
+ return html;
+};
+const v3HandleAction=handleAction;
+handleAction=function(action){
+ if(action==='send-announcement'||action==='send-zone-message'){
+  const messageText=document.getElementById('announcement-body')?.value.trim();
+  const zone=document.getElementById('announcement-target')?.value||'all';
+  if(!messageText){toast('Please write an announcement.');return}
+  if(!['all',...DEMO_ZONES].includes(zone)){toast('Choose a valid recipient zone.');return}
+  if(zone!=='all'&&!enabledFor(event,'seating')){toast('Enable seat check-in for zone targeting.');return}
+  const m={id:'announcement-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),zone,text:messageText,date:Date.now(),active:true};
+  update(s=>{if(!Array.isArray(s.messages))s.messages=[];s.messages.push(m);s.messagesSent++;if(zone==='all'){s.announcement=messageText;s.announcementSent=true}else{s.zoneMessages.push(m)}});
+  toast(zone==='all'?'Announcement sent to all attendees.':'Announcement sent to '+zone+' zone.');return;
+ }
+ if(action==='clear-announcement'){
+  update(s=>{s.announcementSent=false;(s.messages||[]).forEach(m=>m.active=false)});
+  toast('Banners cleared; history retained.');return;
+ }
+ return v3HandleAction(action);
+};
+
 setInterval(()=>{if(state.lightMode==='sequence'){if(currentLight().done){update(s=>{if(s.lightMode==='sequence'&&(Date.now()-s.lightStarted)>=(SEQUENCES[s.sequenceId]?.duration||16)*1000){s.lightMode='idle';s.lightStarted=0}})}else if(view==='display'||(view==='attendee'&&audiencePage==='lights')||(view==='studio'&&(tab==='lights'||audiencePage==='lights')))draw()}},900);
 draw();
 })();
